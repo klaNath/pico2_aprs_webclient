@@ -2,7 +2,7 @@
 // No timers and no BLE: `handleLine` takes one request line and returns the response lines.
 
 import { MAX_LINE_BYTES } from "../../protocol/framing.ts";
-import { KNOWN_SETTINGS } from "../../protocol/settings.ts";
+import { KNOWN_SETTINGS, validateSetting } from "../../protocol/settings.ts";
 import { PROTO_VERSION } from "../../protocol/types.ts";
 import type { SettingValue, SettingsValues, StationMsg, StatusMsg } from "../../protocol/types.ts";
 
@@ -21,61 +21,6 @@ export const DEFAULT_SETTINGS: SettingsValues = {
 };
 
 const encoder = new TextEncoder();
-
-function isInt(v: unknown, min: number, max: number): boolean {
-  return typeof v === "number" && Number.isInteger(v) && v >= min && v <= max;
-}
-
-/** Validate one value (§9.1). Returns the normalized value (e.g. upper-cased `path`), or an error message. */
-export function validateSetting(
-  key: string,
-  v: unknown,
-): { error: string } | { value: SettingValue } {
-  switch (key) {
-    case "callsign":
-      if (v === null) return { value: null };
-      if (typeof v === "string" && /^[A-Z0-9]{3,6}$/.test(v) && /\d/.test(v)) return { value: v };
-      return { error: "3-6 chars A-Z 0-9 with a digit, or null" };
-    case "ssid":
-      return isInt(v, 0, 15) ? { value: v as number } : { error: "integer 0-15" };
-    case "symbol":
-      if (
-        typeof v === "string" &&
-        v.length === 2 &&
-        /^[/\\0-9A-Z]$/.test(v[0]!) &&
-        v.charCodeAt(1) >= 0x21 &&
-        v.charCodeAt(1) <= 0x7e
-      )
-        return { value: v };
-      return { error: "2 chars: table (/ \\ 0-9 A-Z) + code (! to ~)" };
-    case "path": {
-      if (!Array.isArray(v) || v.length > 2 || !v.every((e) => typeof e === "string"))
-        return { error: "list of 0-2 strings" };
-      const up = (v as string[]).map((e) => e.toUpperCase());
-      if (!up.every((e) => /^[A-Z0-9]{1,6}(-([0-9]|1[0-5]))?$/.test(e)))
-        return { error: "entries like WIDE1-1" };
-      return { value: up };
-    }
-    case "comment":
-      if (typeof v === "string" && /^[\x20-\x7e]{0,40}$/.test(v)) return { value: v };
-      return { error: "printable ASCII, 0-40 chars" };
-    case "mice_message":
-      return isInt(v, 0, 6) ? { value: v as number } : { error: "integer 0-6" };
-    case "beacon_moving_s":
-      return isInt(v, 30, 3600) ? { value: v as number } : { error: "integer 30-3600" };
-    case "beacon_still_s":
-      return isInt(v, 60, 7200) ? { value: v as number } : { error: "integer 60-7200" };
-    case "beacon_move_m":
-      return typeof v === "number" && Number.isFinite(v) && v >= 1 && v <= 1000
-        ? { value: v }
-        : { error: "number 1-1000" };
-    case "tx_enabled":
-    case "fx25_tx":
-      return typeof v === "boolean" ? { value: v } : { error: "boolean" };
-    default:
-      return { error: "unknown item" };
-  }
-}
 
 function sameValue(a: SettingValue | undefined, b: SettingValue | undefined): boolean {
   return JSON.stringify(a) === JSON.stringify(b);

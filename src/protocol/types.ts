@@ -178,13 +178,106 @@ export function rxKind(msg: { kind?: unknown }): RxKind {
 export interface ParseError {
   error: string;
   line: string;
+  /** The `id` of the line when it was readable enough to have one (a malformed reply). */
+  id?: number;
 }
 
 export function isParseError(v: Incoming | ParseError): v is ParseError {
   return "error" in v && typeof (v as ParseError).error === "string" && "line" in v && !("t" in v);
 }
 
-/** Parse one line. Only checks that it is a JSON object with a string `t`. */
+// Minimal per-type checks (§8). A key that is present must have the documented type; `null` is
+// not allowed (a missing value is omitted, §6.1). Unknown keys and unknown `t` pass.
+interface Shape {
+  required?: string[];
+  str?: string[];
+  num?: string[];
+  bool?: string[];
+}
+
+const SHAPES: Record<string, Shape> = {
+  hello: { required: ["proto"], num: ["proto"], str: ["name", "mode"] },
+  status: {
+    num: [
+      "fix",
+      "sats",
+      "lat",
+      "lon",
+      "last_tx_s",
+      "next_beacon_s",
+      "rx_count",
+      "tx_count",
+      "lvl_db",
+      "dropped",
+    ],
+    bool: ["sw", "tx_enabled", "tx_ready"],
+    str: ["utc", "tx_refuse", "call", "sd"],
+  },
+  rx: {
+    required: ["tnc2"],
+    str: ["tnc2", "src", "kind", "sym", "utc"],
+    num: ["lat", "lon", "lvl_db"],
+    bool: ["clip"],
+  },
+  tx: { required: ["tnc2"], str: ["tnc2", "utc"], bool: ["dry"] },
+  station: {
+    required: ["src"],
+    str: ["src"],
+    num: ["last_s", "count", "lat", "lon", "lvl_db"],
+    bool: ["own"],
+  },
+  "stations.end": { num: ["n"] },
+  err: { required: ["code"], str: ["code", "key", "msg"] },
+};
+
+function checkShape(o: Record<string, unknown>): string | undefined {
+  const shape = SHAPES[o.t as string];
+  if (shape) {
+    for (const k of shape.required ?? []) if (!(k in o)) return `missing ${k}`;
+    const kinds: [string[] | undefined, (v: unknown) => boolean, string][] = [
+      [shape.str, (v) => typeof v === "string", "a string"],
+      [shape.num, (v) => typeof v === "number" && Number.isFinite(v), "a finite number"],
+      [shape.bool, (v) => typeof v === "boolean", "a boolean"],
+    ];
+    for (const [keys, ok, what] of kinds) {
+      for (const k of keys ?? []) {
+        if (k in o && !ok(o[k])) return `${o.t as string}.${k} must be ${what}`;
+      }
+    }
+  }
+  if (o.t === "schema") {
+    const items = o.items;
+    if (
+      !Array.isArray(items) ||
+      !items.every(
+        (i: unknown) =>
+          typeof i === "object" &&
+          i !== null &&
+          typeof (i as SchemaItem).key === "string" &&
+          typeof (i as SchemaItem).type === "string",
+      )
+    ) {
+      return "schema.items must be a list of items with key and type";
+    }
+  } else if (o.t === "settings") {
+    const v = o.values;
+    if (typeof v !== "object" || v === null || Array.isArray(v)) {
+      return "settings.values must be an object";
+    }
+    if (
+      "changed" in o &&
+      !(Array.isArray(o.changed) && o.changed.every((c) => typeof c === "string"))
+    ) {
+      return "settings.changed must be a list of strings";
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Parse one line. Checks that it is a JSON object with a string `t`, and that the keys of the
+ * known message types have the documented types.
+ */
 export function parseMessage(line: string): Incoming | ParseError {
   let v: unknown;
   try {
@@ -196,8 +289,12 @@ export function parseMessage(line: string): Incoming | ParseError {
     return { error: "not an object", line };
   }
   const o = v as Record<string, unknown>;
-  if (typeof o.t !== "string") return { error: "missing t", line };
   // A non-integer id is treated as absent (§6.1).
   if ("id" in o && !Number.isInteger(o.id)) delete o.id;
+  if (typeof o.t !== "string") return { error: "missing t", line };
+  const bad = checkShape(o);
+  if (bad !== undefined) {
+    return typeof o.id === "number" ? { error: bad, line, id: o.id } : { error: bad, line };
+  }
   return o as Incoming;
 }

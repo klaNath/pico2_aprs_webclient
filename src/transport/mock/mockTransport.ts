@@ -19,7 +19,14 @@ export interface MockTransportOptions {
   rxMinMs?: number;
   rxMaxMs?: number;
   rng?: () => number;
+  /** Time connect() takes (pairing, notifications). 0 = resolves at once. */
+  connectDelayMs?: number;
+  /** Initial value of `writeDelayMs`. */
+  writeDelayMs?: number;
 }
+
+/** The real limit (§5.2). Written out here on purpose, not imported, so that a change of the app's constant is caught. */
+const DEVICE_MAX_WRITE_BYTES = 20;
 
 const MOCK_STATIONS = [
   { src: "Q1AAA-9", lat: 35.66867, lon: 139.76117, sym: "/>", comment: "Hello" },
@@ -31,13 +38,18 @@ export class MockTransport implements Transport {
   readonly device: MockDevice;
   /** Skip (silently drop) the next request line and answer `err busy` instead. */
   busyOnNextLine = false;
+  /** Time each write takes before the device sees it (0 = at once). May be changed at any time. */
+  writeDelayMs: number;
   /** Number of lines silently dropped because they were written before authentication. */
   droppedBeforeAuth = 0;
 
-  private readonly opts: Required<Omit<MockTransportOptions, "device">>;
+  private readonly opts: Required<Omit<MockTransportOptions, "device" | "writeDelayMs">>;
   private dataCb: ((chunk: Uint8Array) => void) | undefined;
   private disconnectCb: ((reason?: string) => void) | undefined;
   private connected = false;
+  /** Bumped when the link goes away; writes still in flight for an older link fail. */
+  private epoch = 0;
+  private abortConnect: (() => void) | undefined;
   private authenticated = false;
   private readonly assembler = new LineAssembler();
   private readonly encoder = new TextEncoder();
@@ -54,32 +66,81 @@ export class MockTransport implements Transport {
       rxMinMs: options.rxMinMs ?? 3000,
       rxMaxMs: options.rxMaxMs ?? 15000,
       rng: options.rng ?? Math.random,
+      connectDelayMs: options.connectDelayMs ?? 0,
     };
+    this.writeDelayMs = options.writeDelayMs ?? 0;
   }
 
   connect(): Promise<void> {
     this.cleanup();
     this.assembler.reset();
-    this.connected = true;
-    this.authenticated = false;
-    if (this.opts.authDelayMs > 0) this.later(this.opts.authDelayMs, () => this.onAuthenticated());
-    else this.onAuthenticated();
-    return Promise.resolve();
+    const epoch = ++this.epoch;
+    const finish = (): void => {
+      this.connected = true;
+      this.authenticated = false;
+      if (this.opts.authDelayMs > 0)
+        this.later(this.opts.authDelayMs, () => this.onAuthenticated());
+      else this.onAuthenticated();
+    };
+    if (this.opts.connectDelayMs <= 0) {
+      finish();
+      return Promise.resolve();
+    }
+    return new Promise((resolve, reject) => {
+      const t = setTimeout(() => {
+        this.abortConnect = undefined;
+        if (epoch !== this.epoch) return;
+        finish();
+        resolve();
+      }, this.opts.connectDelayMs);
+      // disconnect() during connect() makes it reject (see the Transport contract).
+      this.abortConnect = () => {
+        clearTimeout(t);
+        this.abortConnect = undefined;
+        reject(new Error("connect aborted"));
+      };
+    });
   }
 
+  /** Like a real link: closing it also fires the disconnect callback (asynchronously). */
   disconnect(): Promise<void> {
-    this.cleanup();
-    this.connected = false;
-    this.authenticated = false;
+    const wasUp = this.connected;
+    this.abortConnect?.();
+    this.closeLink();
+    if (wasUp) queueMicrotask(() => this.disconnectCb?.());
     return Promise.resolve();
   }
 
   write(chunk: Uint8Array): Promise<void> {
+    if (chunk.length > DEVICE_MAX_WRITE_BYTES) {
+      return Promise.reject(
+        new Error(`write of ${chunk.length} bytes exceeds ${DEVICE_MAX_WRITE_BYTES} (§5.2)`),
+      );
+    }
     if (!this.connected) return Promise.reject(new Error("not connected"));
+    const delay = this.writeDelayMs;
+    if (delay <= 0) {
+      this.deliver(chunk);
+      return Promise.resolve();
+    }
+    const epoch = this.epoch;
+    return new Promise((resolve, reject) => {
+      setTimeout(() => {
+        if (epoch !== this.epoch || !this.connected) {
+          reject(new Error("write failed: disconnected"));
+          return;
+        }
+        this.deliver(chunk);
+        resolve();
+      }, delay);
+    });
+  }
+
+  private deliver(chunk: Uint8Array): void {
     if (!this.authenticated) {
       // Commands before authentication are silently dropped (§4).
       for (const b of chunk) if (b === 0x0a) this.droppedBeforeAuth++; // count whole lines
-      return Promise.resolve();
+      return;
     }
     for (const line of this.assembler.push(chunk)) {
       if (this.busyOnNextLine) {
@@ -89,23 +150,34 @@ export class MockTransport implements Transport {
       }
       for (const out of this.device.handleLine(line)) this.notify(out);
     }
-    return Promise.resolve();
   }
 
-  onData(cb: (chunk: Uint8Array) => void): void {
+  onData(cb: (chunk: Uint8Array) => void): () => void {
     this.dataCb = cb;
+    return () => {
+      if (this.dataCb === cb) this.dataCb = undefined;
+    };
   }
 
-  onDisconnect(cb: (reason?: string) => void): void {
+  onDisconnect(cb: (reason?: string) => void): () => void {
     this.disconnectCb = cb;
+    return () => {
+      if (this.disconnectCb === cb) this.disconnectCb = undefined;
+    };
   }
 
   /** Drop the link as if the device went out of range. */
   simulateDisconnect(reason = "link lost"): void {
+    this.abortConnect?.();
+    this.closeLink();
+    this.disconnectCb?.(reason);
+  }
+
+  private closeLink(): void {
     this.cleanup();
     this.connected = false;
     this.authenticated = false;
-    this.disconnectCb?.(reason);
+    this.epoch++;
   }
 
   /** Send one rx event now (also used by the random timer). */

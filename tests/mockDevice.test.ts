@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { KNOWN_SETTINGS } from "../src/protocol/settings.ts";
-import { DEFAULT_SETTINGS, MockDevice, validateSetting } from "../src/transport/mock/mockDevice.ts";
+import { DEFAULT_SETTINGS, MockDevice } from "../src/transport/mock/mockDevice.ts";
 
 type Obj = Record<string, unknown>;
 
@@ -17,90 +17,6 @@ function call(req: unknown): Obj[] {
 function set(values: unknown, id = 5): Obj {
   return call({ op: "settings.set", id, values })[0]!;
 }
-
-describe("validateSetting (§9.1 ranges)", () => {
-  const ok: [string, unknown][] = [
-    ["ssid", 0],
-    ["ssid", 15],
-    ["beacon_moving_s", 30],
-    ["beacon_moving_s", 3600],
-    ["beacon_still_s", 60],
-    ["beacon_still_s", 7200],
-    ["beacon_move_m", 1],
-    ["beacon_move_m", 1000],
-    ["beacon_move_m", 5], // an integer is accepted for a float item
-    ["mice_message", 0],
-    ["mice_message", 6],
-    ["callsign", "Q1TEST"],
-    ["callsign", "Q1T"],
-    ["callsign", null],
-    ["symbol", "/>"],
-    ["symbol", "\\k"],
-    ["symbol", "5!"],
-    ["path", []],
-    ["path", ["WIDE1-1", "WIDE2-1"]],
-    ["path", ["Q1DIGI-0"]],
-    ["comment", ""],
-    ["comment", "x".repeat(40)],
-    ["tx_enabled", true],
-    ["fx25_tx", false],
-  ];
-  for (const [key, v] of ok) {
-    it(`accepts ${key} = ${JSON.stringify(v)}`, () => {
-      expect(validateSetting(key, v)).toHaveProperty("value");
-    });
-  }
-
-  const bad: [string, unknown][] = [
-    ["ssid", -1],
-    ["ssid", 16],
-    ["ssid", 1.5],
-    ["ssid", true],
-    ["ssid", "5"],
-    ["beacon_moving_s", 29],
-    ["beacon_moving_s", 3601],
-    ["beacon_still_s", 59],
-    ["beacon_still_s", 7201],
-    ["beacon_move_m", 0.5],
-    ["beacon_move_m", 1001],
-    ["beacon_move_m", "5"],
-    ["mice_message", 7], // Emergency cannot be set from the app
-    ["mice_message", -1],
-    ["mice_message", 2.5],
-    ["callsign", "ABCDEF"], // no digit
-    ["callsign", "Q1"], // too short
-    ["callsign", "Q1TEST7"], // too long
-    ["callsign", "q1test"], // lowercase
-    ["callsign", "Q1TEST-7"], // SSID is a separate item
-    ["symbol", "/"],
-    ["symbol", "/>>"],
-    ["symbol", "a>"],
-    ["symbol", "/ "],
-    ["path", ["WIDE1-1", "WIDE2-1", "Q1DIGI"]],
-    ["path", ["WIDE1-1*"]],
-    ["path", ["WIDE1-16"]],
-    ["path", ["TOOLONGNAME"]],
-    ["path", "WIDE1-1"],
-    ["path", [1]],
-    ["comment", "x".repeat(41)],
-    ["comment", "日本語"],
-    ["comment", "tab\there"],
-    ["comment", 5],
-    ["tx_enabled", "yes"],
-    ["tx_enabled", 1],
-    ["fx25_tx", null],
-    ["no_such_item", 1],
-  ];
-  for (const [key, v] of bad) {
-    it(`rejects ${key} = ${JSON.stringify(v)}`, () => {
-      expect(validateSetting(key, v)).toHaveProperty("error");
-    });
-  }
-
-  it("converts path entries to upper case", () => {
-    expect(validateSetting("path", ["wide1-1"])).toEqual({ value: ["WIDE1-1"] });
-  });
-});
 
 describe("settings.set", () => {
   it("returns every item and lists only the items that really changed", () => {

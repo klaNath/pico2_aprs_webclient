@@ -13,6 +13,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+case "${1:-}" in
+  "" | --update) ;;
+  *)
+    echo "usage: $0 [--update]" >&2
+    exit 2
+    ;;
+esac
+
 SUB=docs/spec-src
 FILES=(/docs/ble-protocol.md /docs/ble-control.md)
 
