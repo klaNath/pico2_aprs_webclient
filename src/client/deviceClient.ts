@@ -115,7 +115,7 @@ export class DeviceClient extends Emitter<ClientEvents> {
 
   // ---- connection flow (§6.2) -------------------------------------------------------------
 
-  /** Connect and run hello -> schema -> settings -> stations. Resolves when ready. */
+  /** Connect and run hello -> status -> schema -> settings -> stations. Resolves when ready. */
   async start(): Promise<void> {
     if (
       this.state !== "disconnected" &&
@@ -146,6 +146,9 @@ export class DeviceClient extends Emitter<ClientEvents> {
           `device proto ${String(hello.proto)}, app proto ${PROTO_VERSION}`,
         );
       }
+      // The first status event is sent on authentication and may arrive before notifications
+      // are started (§6.2), so ask for the state explicitly.
+      await this.getStatus();
       await this.getSchema();
       await this.getSettings();
       await this.listStations();

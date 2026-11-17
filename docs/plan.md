@@ -3,7 +3,7 @@
 ## Context
 
 pico2_aprs(Raspberry Pi Pico 2 W の APRS トラッカー)を Android の Chrome から BLE(Web Bluetooth)で操作する Web アプリを新しく作る。
-仕様の正は `klaNath/pico2_aprs` の `docs/ble-protocol.md`(v0.2 / proto 1)。設計の背景は `docs/ble-control.md` にある。
+仕様の正は `klaNath/pico2_aprs` の `docs/ble-protocol.md`(v0.3 / proto 1)。設計の背景は `docs/ble-control.md` にある。
 本機の BLE 層(§2〜§5.2)はまだ実装されていない(暫定)ので、アプリにモックを組み込み、実機なしで開発を進める。
 インターネット上にはデータを永続的に置かない(サーバーや DB を使わない)。端末内(localStorage など)への保存は許可されている。
 
@@ -143,7 +143,7 @@ PWA は `vite-plugin-pwa` を使う(precache のみ。実行時に外部へ取�
 
 ## 実装の要点(仕様から)
 
-- フレーミング: 送るときは UTF-8 に変換して 20 バイト以下に分け、`writeValueWithoutResponse` か `writeValueWithResponse` で順に書く。この上限は定数にして、後で変えられるようにする(U4)
+- フレーミング: 送るときは UTF-8 に変換して 20 バイト以下に分け、`writeValueWithResponse` で、1 回ごとに完了を待って順に書く(§5.2。Web Bluetooth は MTU を教えないので 20 バイトで固定。定数 `MAX_WRITE_BYTES` にしてある)
 - 受けるときは notification をつなげて `\n` で切り、各行を JSON.parse する。失敗した行は捨ててログに残す
 - 接続後: 通知を開始し、`hello` を送る(応答がなければ 3 秒間隔で数回再送する)。proto が 1 でなければ止めて利用者に伝える。そのあと schema → get → stations.list の順に送る
 - 未知のキーや未知の kind は無視し、`other` として扱う。欠けたキーは undefined として扱う

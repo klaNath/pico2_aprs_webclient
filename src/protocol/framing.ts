@@ -1,6 +1,6 @@
 // Line framing (ble-protocol.md §5).
 
-/** Max bytes per app -> device write (U4: 20 for now, may be raised). */
+/** Max bytes per app -> device write (§5.2: 20 or fewer; Web Bluetooth does not expose the MTU). */
 export const MAX_WRITE_BYTES = 20;
 /** Max bytes per line the device accepts, excluding the newline (§5.1). */
 export const MAX_LINE_BYTES = 512;

@@ -41,13 +41,14 @@ afterEach(async () => {
 });
 
 describe("connection flow (§6.2)", () => {
-  it("runs hello -> schema -> get -> stations and becomes ready", async () => {
+  it("runs hello -> status -> schema -> get -> stations and becomes ready", async () => {
     const states: string[] = [];
     client.on("state", (s) => states.push(s));
     await ready();
     expect(states).toEqual(["connecting", "handshaking", "ready"]);
     expect(lines.map((l) => l.op)).toEqual([
       "hello",
+      "status",
       "settings.schema",
       "settings.get",
       "stations.list",
@@ -60,9 +61,9 @@ describe("connection flow (§6.2)", () => {
 
   it("numbers requests 1, 2, 3, ... and matches each response to its request", async () => {
     await ready();
-    expect(lines.map((l) => l.id)).toEqual([1, 2, 3, 4]);
+    expect(lines.map((l) => l.id)).toEqual([1, 2, 3, 4, 5]);
     const st = await client.getStatus();
-    expect(lines.at(-1)).toMatchObject({ op: "status", id: 5 });
+    expect(lines.at(-1)).toMatchObject({ op: "status", id: 6 });
     expect(st.t).toBe("status");
   });
 
@@ -74,14 +75,34 @@ describe("connection flow (§6.2)", () => {
     expect(client.stations).toHaveLength(3);
   });
 
-  it("emits the status sent right after connecting and every 5 seconds", async () => {
+  it("has the status right after connecting (event + explicit request), then every 5 seconds", async () => {
     const statuses: StatusMsg[] = [];
     client.on("status", (s) => statuses.push(s));
     await ready();
-    expect(statuses).toHaveLength(1);
-    await vi.advanceTimersByTimeAsync(5000);
-    expect(statuses).toHaveLength(2);
+    expect(statuses).toHaveLength(2); // the on-connect event, and the answer to our status request
     expect(client.lastStatus).toBe(statuses[1]);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(statuses).toHaveLength(3);
+    expect(client.lastStatus).toBe(statuses[2]);
+  });
+
+  it("still has the state if the on-connect status event was missed (§6.2)", async () => {
+    setup({ authDelayMs: 0 });
+    // Drop every notification that is sent before the client asks for anything.
+    const orig = transport.onData.bind(transport);
+    let first = true;
+    transport.onData = (cb) =>
+      orig((chunk) => {
+        if (first) {
+          if (chunk.includes(0x0a)) first = false;
+          return; // the first status line is lost
+        }
+        cb(chunk);
+      });
+    const c = new DeviceClient(transport);
+    await c.start();
+    expect(c.lastStatus).toMatchObject({ t: "status", call: "Q1TEST-7" });
+    await c.stop();
   });
 });
 

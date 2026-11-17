@@ -1,5 +1,5 @@
 [submodule "docs/spec-src"]
 	path = docs/spec-src
 	url = https://github.com/klaNath/pico2_aprs.git
-	branch = radio-interface-schematic
+	branch = main
 	shallow = true
