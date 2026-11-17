@@ -16,7 +16,7 @@ pico2_aprs(Pico 2 W の APRS トラッカー)を Android Chrome から BLE(Web B
 
 ## 仕様書の取得と更新
 
-- clone 直後: `git clone --recurse-submodules <url>`、または clone 後に `npm run spec`。sparse-checkout の設定は clone ごとなので、どちらの場合も `npm run spec` を一度実行する
+- clone 直後: 普通に `git clone <url>` したあと `npm run spec` を一度実行する。`--recurse-submodules` は使わない(`pico2_aprs` 自身のサブモジュール `third_party/*` まで取ってしまう。sparse-checkout の設定も clone ごとに必要なので、結局 `npm run spec` が要る)
 - 最新に進める: `npm run spec:update`(ピンを追跡ブランチの先頭に動かす)→ 変更を確認 → `git add docs/spec-src && git commit`
 - 追跡ブランチが main にマージされて消えたら、`git config -f .gitmodules submodule.docs/spec-src.branch main` で変える
 - 実体は `scripts/setup-spec.sh`
