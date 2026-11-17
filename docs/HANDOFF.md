@@ -16,18 +16,20 @@
 - ble-protocol.md: v0.2(2026-11-16)、proto 1。サブモジュールのピン 37c2408(`klaNath/pico2_aprs` の `radio-interface-schematic` ブランチ)。読む場所は `docs/spec-src/docs/`
 - 再開時に `npm run spec:update` を実行し、ピンが動いたら(`git -C docs/spec-src log` と差分で)変更点を確認してから実装に反映する。新しいピンは親リポジトリでコミットする(特に §2〜§5.2 の暫定部分と §11 の未確定項目 U1〜U7)
 
-## 次にやること(作業 2)
+## 作業 2 の結果(完了)
 
-`protocol/`、`client/`、`transport/mockTransport.ts` を作り、Vitest で検証する。plan.md の構成と「実装の要点」を参照。
+- `src/protocol/`(types、framing、settings)、`src/transport/transport.ts`、`src/transport/mock/`(mockDevice = 時間に依存しない疑似デバイス、mockTransport = 認証前の書き込みを捨てる、status 5 秒ごと、rx、`busyOnNextLine`、`simulateDisconnect`)、`src/client/`(deviceClient、emitter)
+- deviceClient は要求を 1 つずつ送る(`busy` は id がないため、送信中の 1 件を 500 ms 後に 1 回だけ再送)。hello は 3 秒間隔で最大 5 回。書き込みは 1 行ずつ直列。`setSettings` は差分だけを 1 回で送り、差分がなければ何も送らない。切断時は待っている要求を `disconnected` で失敗させる
+- 自動再接続とバックオフは作業 5(webBluetooth 側)で扱う。確認ダイアログ(tx_enabled、callsign、reset)は作業 4 の UI で作る
+- テスト 120 件(framing、types、mockDevice、deviceClient)。`tsconfig.json` の `include` に `tests` を足し、`tests/sanity.test.ts` を消した。`npm run typecheck`、`lint`、`test`、`build` が通る
+- 雛形のサンプル(`src/counter.ts`、`src/main.ts`、`src/style.css`、`src/assets/`)は、作業 4 で UI に置き換えるときに消す
+- 仕様のピンは 37c2408 のまま(再開時に `spec:update` で最新と確認済み)
 
-1. `src/protocol/types.ts`: §6〜§9 のメッセージ型(未知のキーと未知の kind を許す)
-2. `src/protocol/framing.ts`: 行の組み立て(TextDecoder の `stream: true`)と、20 バイト以下への分割(上限は定数)
-3. `src/transport/transport.ts`(インターフェース)と `mockTransport.ts`(§9.1 の範囲検証、settings.set は全部か無しか、status を 5 秒ごと、rx を不定期、認証前のコマンドは捨てる動作も再現)
-4. `src/client/deviceClient.ts`: id の採番、要求と応答の対応、タイムアウト、hello の再送、proto の確認、§6.2 の流れ、`busy` の再送、書き込みの直列化
-5. テスト: 行の分割、id の対応、再送、全部か無しか、err の各 code
-6. 雛形のサンプル(`src/counter.ts`、`src/main.ts`、`src/style.css`、`tests/sanity.test.ts`)は不要になったら消す
+## 次にやること(作業 3)
 
-その後は plan.md の順(作業 3: TNC2/APRS パーサー → 4: UI → 5: Web Bluetooth → 6: PWA と Pages)。
+`aprs/` パーサーを作り、Vitest で検証する。plan.md の構成(tnc2、parse、mice、compressed、weather、telemetry、symbols、geo)と「作業の順序」の 3 を参照。テストデータの局名は Q1 で始まる架空のコールサインにする。
+
+その後は plan.md の順(作業 4: UI → 5: Web Bluetooth → 6: PWA と Pages)。
 
 ## 環境の注意
 
