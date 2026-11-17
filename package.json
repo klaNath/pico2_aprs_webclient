@@ -11,7 +11,8 @@
     "lint": "eslint src tests",
     "format": "prettier --write .",
     "typecheck": "tsc --noEmit",
-    "spec": "bash scripts/fetch-spec.sh"
+    "spec:update": "bash scripts/setup-spec.sh --update",
+    "spec": "bash scripts/setup-spec.sh"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

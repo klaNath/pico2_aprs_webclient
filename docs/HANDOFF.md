@@ -9,12 +9,12 @@
 - git: user.name は klaNath、user.email は GitHub の noreply。`gh auth login` 済み(HTTPS)
 - 雛形(作業 1): Vite 8 + TS 6.0.3 + vitest 5 + vite-plugin-pwa 2 + eslint 10 + prettier。typecheck、test、lint、build が通ることを確認済み
 - 非公開リポジトリ https://github.com/klaNath/pico2_aprs_webclient に push 済み(main)
-- 仕様書の取得スクリプト `scripts/fetch-spec.sh`(`npm run spec`)
+- 仕様書は git サブモジュール `docs/spec-src`(`klaNath/pico2_aprs` の `radio-interface-schematic` を追跡、sparse-checkout で ble-protocol.md と ble-control.md のみ)。取得と更新は `npm run spec` / `npm run spec:update`(`scripts/setup-spec.sh`)
 
 ## 仕様書の版(前回確認したもの)
 
-- ble-protocol.md: v0.2(2026-11-16)、proto 1。コミット 37c2408(`klaNath/pico2_aprs` の `radio-interface-schematic` ブランチ)
-- 再開時に `npm run spec` で取り直し、`docs/spec/SOURCE.txt` のコミットと版を比べる。変わっていたら、変更点を確認してから実装に反映する(特に §2〜§5.2 の暫定部分と §11 の未確定項目 U1〜U7)
+- ble-protocol.md: v0.2(2026-11-16)、proto 1。サブモジュールのピン 37c2408(`klaNath/pico2_aprs` の `radio-interface-schematic` ブランチ)。読む場所は `docs/spec-src/docs/`
+- 再開時に `npm run spec:update` を実行し、ピンが動いたら(`git -C docs/spec-src log` と差分で)変更点を確認してから実装に反映する。新しいピンは親リポジトリでコミットする(特に §2〜§5.2 の暫定部分と §11 の未確定項目 U1〜U7)
 
 ## 次にやること(作業 2)
 
