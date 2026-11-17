@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Fetched from klaNath/pico2_aprs by scripts/fetch-spec.sh
+docs/spec/
