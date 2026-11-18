@@ -8,6 +8,8 @@ import { createConnectView } from "./ui/connectView.ts";
 import { h } from "./ui/dom.ts";
 import { createFeedView } from "./ui/feedView.ts";
 import { createHeader } from "./ui/header.ts";
+import { registerPwa } from "./pwa.ts";
+import { createUpdateBanner } from "./ui/updateBanner.ts";
 import { createRadarView } from "./ui/radarView.ts";
 import { createSettingsView } from "./ui/settingsView.ts";
 import {
@@ -82,7 +84,10 @@ const failed = h("div", {
   text: "This screen failed to update. The other screens still work.",
   attrs: { role: "alert" },
 });
-const notices = h("div", { class: "shell-notices" }, offline, failed);
+// Notices about the installed app: a new version waits for the user's "Update" (see pwa.ts).
+let applyUpdate: () => Promise<void> = () => Promise.resolve();
+const updates = createUpdateBanner(() => applyUpdate());
+const notices = h("div", { class: "shell-notices" }, offline, failed, ...updates.els);
 
 function applyTheme(): void {
   const theme = app.prefs.get("theme");
@@ -167,7 +172,8 @@ function renderAll(): void {
   offline.hidden = !layout.offlineBanner;
   reconnect.hidden = current === "status";
   failed.hidden = ok;
-  notices.hidden = offline.hidden && failed.hidden;
+  updates.render(app.state === "ready");
+  notices.hidden = offline.hidden && failed.hidden && !updates.visible;
 }
 
 let frame = 0;
@@ -195,6 +201,16 @@ window.addEventListener("beforeunload", (ev) => {
 });
 
 applyTheme();
+applyUpdate = registerPwa({
+  onNeedRefresh: () => {
+    updates.setUpdateReady();
+    schedule();
+  },
+  onOfflineReady: () => {
+    updates.setOfflineReady();
+    schedule();
+  },
+});
 try {
   history.replaceState({ tab: current }, "", `${location.pathname}${location.search}#${current}`);
 } catch {

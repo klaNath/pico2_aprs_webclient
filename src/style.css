@@ -473,6 +473,12 @@ textarea:focus-visible {
   font-weight: 600;
 }
 
+.banner-info {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
 .banner-problem {
   background: var(--danger);
   color: var(--danger-text);
