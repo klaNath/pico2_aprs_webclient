@@ -117,25 +117,153 @@ describe("hello resend (commands before authentication are dropped, §4)", () =>
     expect(lines[0]).toMatchObject({ op: "hello", id: 1 }); // every resend keeps the same id
   });
 
-  it("gives up after helloAttempts", async () => {
+  it("keeps resending for 60 s (the device's limit, §4) and then gives up", async () => {
     setup({ authDelayMs: 1_000_000 });
     const p = client.start();
     const assertion = expect(p).rejects.toMatchObject({ code: "timeout" });
-    await vi.advanceTimersByTimeAsync(15_000);
+    await vi.advanceTimersByTimeAsync(59_000);
+    expect(client.state).toBe("handshaking"); // 15 s used to be the end
+    await vi.advanceTimersByTimeAsync(1_000);
     await assertion;
-    expect(transport.droppedBeforeAuth).toBe(5);
+    expect(transport.droppedBeforeAuth).toBe(20); // 0 s, 3 s, ... 57 s
     expect(client.state).toBe("error");
+  });
+
+  it("succeeds when the user types the passkey late (45 s)", async () => {
+    setup({ authDelayMs: 45_000 });
+    const p = client.start();
+    await vi.advanceTimersByTimeAsync(48_000);
+    await p;
+    expect(client.state).toBe("ready");
   });
 
   it("can be started again after a failure", async () => {
     setup({ authDelayMs: 1_000_000 });
     const p = client.start();
     const assertion = expect(p).rejects.toBeInstanceOf(DeviceError);
-    await vi.advanceTimersByTimeAsync(15_000);
+    await vi.advanceTimersByTimeAsync(60_000);
     await assertion;
     setup(); // a fresh device that answers at once
     await ready();
     expect(client.state).toBe("ready");
+  });
+});
+
+describe("a failed write and resynchronizing (§5.3)", () => {
+  /** Chunks the device was given, as text, in order. */
+  function spyWrites(): string[] {
+    const written: string[] = [];
+    const orig = transport.write.bind(transport);
+    vi.spyOn(transport, "write").mockImplementation((c: Uint8Array) => {
+      written.push(new TextDecoder().decode(c));
+      return orig(c);
+    });
+    return written;
+  }
+
+  it("sends a bare newline before the next request, and does not treat the bad_json it may cause as an error", async () => {
+    await ready();
+    const errors: ErrMsg[] = [];
+    client.on("deviceError", (e) => errors.push(e));
+    lines.length = 0;
+    // The first chunk of the next line reaches the device, the second does not.
+    const orig = transport.write.bind(transport);
+    const calls: string[] = [];
+    let n = 0;
+    vi.spyOn(transport, "write").mockImplementation(async (c: Uint8Array) => {
+      calls.push(new TextDecoder().decode(c));
+      if (++n === 2) throw new Error("GATT error");
+      return orig(c);
+    });
+    await expect(client.getStatus()).rejects.toMatchObject({ code: "write_failed" });
+    expect(calls).toHaveLength(2);
+    const st = await client.getStatus(); // resyncs first
+    expect(st.t).toBe("status");
+    // [chunk 1][chunk 2 failed] then "\n" alone, then the whole next request
+    expect(calls[2]).toBe("\n");
+    expect(calls.slice(3).join("")).toMatch(/^\{"op":"status","id":\d+\}\n$/);
+    // The device saw the fragment ended by the newline, and then the request.
+    expect(lines.some((l) => "unparsable" in l)).toBe(true);
+    expect(errors).toEqual([]);
+    // Only once: the request after that is written without it.
+    calls.length = 0;
+    await client.getStatus();
+    expect(calls.join("")).not.toMatch(/^\n/);
+  });
+
+  it("does not wait for a bad_json when the device held nothing", async () => {
+    await ready();
+    const orig = transport.write.bind(transport);
+    let first = true;
+    vi.spyOn(transport, "write").mockImplementation(async (c: Uint8Array) => {
+      if (first) {
+        first = false;
+        throw new Error("GATT error"); // nothing reached the device
+      }
+      return orig(c);
+    });
+    await expect(client.getStatus()).rejects.toMatchObject({ code: "write_failed" });
+    expect((await client.getStatus()).t).toBe("status");
+    // A real bad_json later is still an error for the request in flight.
+    transport.writeDelayMs = 50; // the request is in flight when the error arrives
+    const p = client.getStatus();
+    const assertion = expect(p).rejects.toMatchObject({ code: "bad_json" });
+    await vi.advanceTimersByTimeAsync(10);
+    transport.sendRaw(JSON.stringify({ t: "err", code: "bad_json" }));
+    await assertion;
+  });
+
+  it("starts clean on a new connection (the device clears its buffer)", async () => {
+    await ready();
+    vi.spyOn(transport, "write").mockRejectedValueOnce(new Error("GATT error"));
+    await expect(client.getStatus()).rejects.toBeInstanceOf(DeviceError);
+    await client.stop();
+    vi.restoreAllMocks();
+    const written = spyWrites();
+    await ready();
+    expect(written.join("")).toMatch(/^\{"op":"hello"/);
+  });
+});
+
+describe("hello when the write is refused before authentication (§4)", () => {
+  it("resends hello after a failed write, with the newline first, until it works", async () => {
+    setup();
+    const orig = transport.write.bind(transport);
+    let fails = 2;
+    vi.spyOn(transport, "write").mockImplementation((c: Uint8Array) => {
+      if (fails > 0) {
+        fails--;
+        return Promise.reject(new Error("Insufficient Authentication"));
+      }
+      return orig(c);
+    });
+    const p = client.start();
+    await vi.advanceTimersByTimeAsync(7000);
+    await p;
+    expect(client.state).toBe("ready");
+  });
+
+  it("gives up with write_failed when the writes keep failing for 60 s", async () => {
+    setup();
+    vi.spyOn(transport, "write").mockRejectedValue(new Error("Insufficient Authentication"));
+    const p = client.start();
+    const assertion = expect(p).rejects.toMatchObject({ code: "write_failed" });
+    await vi.advanceTimersByTimeAsync(61_000);
+    await assertion;
+    expect(client.state).toBe("error");
+  });
+
+  it("does not resend after the link drops", async () => {
+    setup({ authDelayMs: 1_000_000 });
+    const p = client.start();
+    const assertion = expect(p).rejects.toBeInstanceOf(DeviceError);
+    await vi.advanceTimersByTimeAsync(4000);
+    await transport.disconnect();
+    await vi.advanceTimersByTimeAsync(1);
+    await assertion;
+    const dropped = transport.droppedBeforeAuth;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(transport.droppedBeforeAuth).toBe(dropped);
   });
 });
 
@@ -719,7 +847,7 @@ describe("M1: a failed start keeps its error", () => {
     setup({ authDelayMs: 1_000_000 });
     const p = client.start();
     const assertion = expect(p).rejects.toMatchObject({ code: "timeout" });
-    await vi.advanceTimersByTimeAsync(15_000);
+    await vi.advanceTimersByTimeAsync(60_000);
     await assertion;
     await vi.advanceTimersByTimeAsync(0); // the disconnect callback of the (mock) link has run
     expect(client.state).toBe("error");

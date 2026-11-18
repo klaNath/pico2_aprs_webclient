@@ -54,8 +54,14 @@ export type ClientEvents = {
 
 export interface DeviceClientOptions {
   requestTimeoutMs?: number;
+  /** How often `hello` is resent until the device answers (§4). */
   helloRetryMs?: number;
-  helloAttempts?: number;
+  /**
+   * How long `hello` keeps being resent. The device drops a connection that is not authenticated
+   * 60 s after connecting (§4), and the user has 30 s from the moment the passkey shows to type
+   * it, so the app must not give up before then.
+   */
+  helloWindowMs?: number;
   busyRetryDelayMs?: number;
   /** Bytes per write, 1 to MAX_WRITE_BYTES (§5.2). Larger values are clamped to 20. */
   maxWriteBytes?: number;
@@ -66,6 +72,9 @@ export interface DeviceClientOptions {
  * the rest of the last status can no longer be trusted.
  */
 export const STATUS_STALE_MS = 15_000;
+
+/** How long `hello` is resent (§4: the device cuts an unauthenticated connection at 60 s). */
+export const HELLO_WINDOW_MS = 60_000;
 
 /**
  * Local codes: timeout, disconnected, not_connected, proto_mismatch, already_started, disposed,
@@ -103,7 +112,8 @@ interface Pending {
   reject: (e: Error) => void;
   sends: number;
   busyRetried: boolean;
-  retry?: { everyMs: number; max: number };
+  /** Resend every `everyMs` until `Date.now()` reaches `until`. */
+  retry?: { everyMs: number; until: number };
   /** Set for stations.list: collects `station` lines until `stations.end`. */
   stations?: StationMsg[];
   timer?: ReturnType<typeof setTimeout>;
@@ -115,6 +125,9 @@ interface Pending {
  * request (timeout, disconnect, ...) the device may have applied the change, so the cached
  * settings can no longer be trusted.
  */
+/** The bare newline that resynchronizes the device's line buffer (§5.3). */
+const NEWLINE = new Uint8Array([0x0a]);
+
 const NOT_APPLIED = new Set(["invalid", "io", "too_long", "bad_json", "busy", "unknown_op"]);
 
 const noop = (): void => undefined;
@@ -150,6 +163,10 @@ export class DeviceClient extends Emitter<ClientEvents> {
   private refreshing: Promise<void> | undefined;
   private settingsLock: Promise<unknown> = Promise.resolve();
   private staleFlag = false;
+  /** A write failed: send a bare newline before the next request (§5.3). */
+  private needsResync = false;
+  /** A resync newline was sent: one id-less `bad_json` may come back, and is not an error. */
+  private expectBadJson = false;
   private staleTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly unsubscribe: (() => void)[] = [];
 
@@ -162,7 +179,7 @@ export class DeviceClient extends Emitter<ClientEvents> {
     this.opts = {
       requestTimeoutMs: options.requestTimeoutMs ?? 5000,
       helloRetryMs: options.helloRetryMs ?? 3000,
-      helloAttempts: options.helloAttempts ?? 5,
+      helloWindowMs: options.helloWindowMs ?? HELLO_WINDOW_MS,
       busyRetryDelayMs: options.busyRetryDelayMs ?? 500,
       // The device accepts at most 20 bytes per write (§5.2): never more, whatever is asked.
       maxWriteBytes: Number.isFinite(maxWrite)
@@ -196,6 +213,7 @@ export class DeviceClient extends Emitter<ClientEvents> {
     this.lastError = undefined;
     this.lastDisconnectReason = undefined;
     this.assembler.reset();
+    this.resetResync(); // the device clears its line buffer on every connection (§5.3)
     try {
       this.setState("connecting");
       const connect = this.transport.connect();
@@ -209,10 +227,16 @@ export class DeviceClient extends Emitter<ClientEvents> {
       if (gen !== this.generation) throw new DeviceError("disconnected");
       this.setState("handshaking");
 
-      // Commands before authentication are silently dropped, so hello is resent.
+      // Commands before authentication are refused or dropped (§4), so hello is resent until the
+      // device answers, the link drops, or the device's own time limit has passed.
       const hello = (await this.request(
         { op: "hello" },
-        { retry: { everyMs: this.opts.helloRetryMs, max: this.opts.helloAttempts } },
+        {
+          retry: {
+            everyMs: this.opts.helloRetryMs,
+            until: Date.now() + this.opts.helloWindowMs,
+          },
+        },
       )) as HelloMsg;
       this.hello = hello;
       if (hello.proto !== PROTO_VERSION) {
@@ -516,14 +540,29 @@ export class DeviceClient extends Emitter<ClientEvents> {
       () => {
         if (this.pending === p) this.arm(p);
       },
-      (e: unknown) =>
+      (e: unknown) => {
+        // hello is resent after a failed write too, while the time is not up: before the device
+        // authenticates, Chrome may reject the refused write instead of holding it (§4).
+        if (
+          p.retry &&
+          this.pending === p &&
+          !(e instanceof DeviceError) &&
+          Date.now() < p.retry.until
+        ) {
+          clearTimeout(p.timer);
+          p.timer = setTimeout(() => {
+            if (this.pending === p) this.send(p);
+          }, p.retry.everyMs);
+          return;
+        }
         this.settle(p, () =>
           p.reject(
             e instanceof DeviceError
               ? e
               : new DeviceError("write_failed", e instanceof Error ? e.message : String(e)),
           ),
-        ),
+        );
+      },
     );
   }
 
@@ -535,13 +574,43 @@ export class DeviceClient extends Emitter<ClientEvents> {
     const gen = this.generation;
     const chunks = splitBytes(bytes, this.opts.maxWriteBytes);
     const done = this.writeChain.then(async () => {
+      if (gen !== this.generation) throw new DeviceError("disconnected");
+      await this.resync();
       for (const c of chunks) {
         if (gen !== this.generation) throw new DeviceError("disconnected");
-        await this.transport.write(c);
+        try {
+          await this.transport.write(c);
+        } catch (e) {
+          // The device may hold the first part of this line (§5.3).
+          if (gen === this.generation) this.needsResync = true;
+          throw e;
+        }
       }
     });
     this.writeChain = done.catch(noop);
     return done;
+  }
+
+  /**
+   * After a failed write the device may hold part of a line, which would be glued to the next
+   * request. A single "\n" ends it (§5.3): the device answers one `bad_json` (no id) if it held a
+   * fragment and nothing if it did not. That answer belongs to the resync, not to the request.
+   */
+  private async resync(): Promise<void> {
+    if (!this.needsResync) return;
+    this.expectBadJson = true; // before the write: the answer can overtake the write's completion
+    try {
+      await this.transport.write(NEWLINE);
+    } catch (e) {
+      this.expectBadJson = false;
+      throw e;
+    }
+    this.needsResync = false;
+  }
+
+  private resetResync(): void {
+    this.needsResync = false;
+    this.expectBadJson = false;
   }
 
   /** (Re)start the timeout, or the resend timer for requests that are resent (hello). */
@@ -550,7 +619,7 @@ export class DeviceClient extends Emitter<ClientEvents> {
     if (p.retry) {
       p.timer = setTimeout(() => {
         if (this.pending !== p) return;
-        if (p.sends < p.retry!.max) {
+        if (Date.now() < p.retry!.until) {
           this.send(p); // arms again when the write has completed
         } else {
           this.settle(p, () => p.reject(new DeviceError("timeout", "no response")));
@@ -569,6 +638,8 @@ export class DeviceClient extends Emitter<ClientEvents> {
     clearTimeout(p.timer);
     clearTimeout(p.busyTimer);
     this.pending = undefined;
+    // The answer to a resync comes before the response to the request that followed it.
+    this.expectBadJson = false;
     finish();
   }
 
@@ -638,7 +709,9 @@ export class DeviceClient extends Emitter<ClientEvents> {
     const p = this.pending;
     if (m.t === "err") {
       const e = m as ErrMsg;
-      if (p && e.id === p.id) {
+      if (e.id === undefined && e.code === "bad_json" && this.expectBadJson) {
+        this.expectBadJson = false; // the answer to the resync "\n" (§5.3)
+      } else if (p && e.id === p.id) {
         this.settle(p, () => p.reject(new DeviceError(e.code, e.msg, e.key)));
       } else if (p && e.id === undefined && e.code === "busy") {
         this.onBusy(p);
@@ -681,6 +754,7 @@ export class DeviceClient extends Emitter<ClientEvents> {
 
   private handleDisconnect(reason?: string): void {
     this.generation++;
+    this.resetResync();
     this.lastDisconnectReason = reason;
     this.failPending(new DeviceError("disconnected"));
     this.resetConnectionData();
@@ -692,6 +766,7 @@ export class DeviceClient extends Emitter<ClientEvents> {
 
   /** Forget what belongs to the connection: it must not look current after a disconnect. */
   private resetConnectionData(): void {
+    this.resetResync();
     this.lastStatus = undefined;
     this.lastStatusAt = undefined;
     clearTimeout(this.staleTimer);

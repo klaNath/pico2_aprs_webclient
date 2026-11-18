@@ -426,7 +426,7 @@ describe("M7: the notice is a sentence for people", () => {
     transports[0]!.writeDelayMs = 0;
     // The device never authenticates: hello is never answered.
     (transports[0] as unknown as { opts: { authDelayMs: number } }).opts.authDelayMs = 10 ** 9;
-    await run(p, 40_000);
+    await run(p, 70_000);
     expect(app.state).toBe("error");
     expect(app.notice).toMatch(/did not respond/i);
     expect(app.notice).not.toMatch(/timeout|_|\(|:/);
