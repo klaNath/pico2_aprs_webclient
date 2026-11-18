@@ -1,19 +1,50 @@
-// Shown instead of the tabs while there is no usable connection.
-// Pairing guidance (§4, provisional until U3 is confirmed in Chrome): on the first connection
-// Android shows a pairing dialog and the unit's LCD shows a 6-digit passkey.
+// The connection card / screen. Shown full-page before anything has been connected, and as a
+// card on top of the Status tab while the link is down but the tabs still have data to read.
+// Pairing guidance (§4, provisional until U3 is confirmed in Chrome): Android may show a pairing
+// dialog on the first connection, and the unit's LCD shows a 6-digit passkey.
 
 import type { ClientState } from "../client/deviceClient.ts";
+import { PROTO_VERSION } from "../protocol/types.ts";
 import type { App } from "../store/state.ts";
 import { h, setText } from "./dom.ts";
+import { hasLastKnownData } from "./shell.ts";
 import type { View } from "./view.ts";
 
-/** Whether the connect screen (not the tabs) should be shown. */
-export function needsConnect(state: ClientState): boolean {
-  return state !== "ready";
+/** The explanation for a protocol mismatch (§6.1). Needs the device's `hello.proto`, if known. */
+export function protoMismatchText(deviceProto: unknown): string {
+  const theirs = typeof deviceProto === "number" ? `version ${deviceProto}` : "a different version";
+  return `This tracker speaks protocol ${theirs}; this app supports ${PROTO_VERSION}. Update the app.`;
 }
 
+/**
+ * The one message to show above the buttons. A protocol mismatch always gets its own text (the
+ * app's `notice` is empty then); otherwise the app's notice; otherwise why the link dropped.
+ */
+export function connectMessage(info: {
+  state: ClientState;
+  notice: string | undefined;
+  deviceProto: unknown;
+  disconnectReason: string | undefined;
+}): string | undefined {
+  if (info.state === "proto_mismatch") return protoMismatchText(info.deviceProto);
+  if (info.notice) return info.notice;
+  if (info.disconnectReason) return `Disconnected: ${info.disconnectReason}`;
+  return undefined;
+}
+
+/** Why Web Bluetooth is missing, when it is: the browser, or a page that is not HTTPS. */
+export function webBluetoothHelp(hasBluetooth: boolean, isSecure: boolean): string | undefined {
+  if (hasBluetooth) return undefined;
+  return isSecure
+    ? "Web Bluetooth is not available in this browser. Use Chrome on Android. You can still try the demo."
+    : "Web Bluetooth is not available. This page is not on HTTPS (or localhost), which Web Bluetooth requires, and the browser may not support it either. Open the https:// address in Chrome on Android. You can still try the demo.";
+}
+
+export const PAIRING_HINT =
+  "Your phone may ask you to pair. If it does, enter the 6-digit passkey shown on the tracker's LCD.";
+
 export function createConnectView(app: App): View {
-  const heading = h("h2", { text: "Connect to your tracker" });
+  const heading = h("h2");
   const intro = h("p", {
     class: "muted",
     text: "Control a pico2_aprs tracker over Bluetooth Low Energy. The app runs entirely in this browser; nothing is sent to a server.",
@@ -37,17 +68,37 @@ export function createConnectView(app: App): View {
     on: { click: () => void app.disconnect() },
   });
   const buttons = h("div", { class: "row" }, btBtn, demoBtn, cancelBtn);
-  const progress = h("p", { class: "progress" });
+  const progress = h("p", { class: "progress", attrs: { role: "status" } });
   const pairing = h(
     "div",
     { class: "card note" },
-    h("strong", { text: "First time?" }),
+    h("strong", { text: "Pairing" }),
+    h("p", { text: PAIRING_HINT }),
     h("p", {
-      text: "Your phone will ask to pair. Enter the 6-digit passkey shown on the tracker's LCD. Later connections reuse the pairing and need no passkey.",
+      class: "muted",
+      text: "Later connections reuse the pairing and need no passkey.",
     }),
   );
   const problem = h("p", { class: "problem", attrs: { role: "alert" } });
   const noBt = h("p", { class: "muted" });
+  const help = h(
+    "details",
+    { class: "card help" },
+    h("summary", { text: "Trouble connecting?" }),
+    h(
+      "ul",
+      {},
+      h("li", {
+        text: "The tracker accepts one connection at a time and stops advertising while connected. If another phone or app is connected to it, it will not be found. Disconnect that one first.",
+      }),
+      h("li", {
+        text: "If pairing fails or the app cannot reconnect, delete (forget) the tracker in your phone's Bluetooth settings, then connect again and re-enter the passkey.",
+      }),
+      h("li", {
+        text: "Web Bluetooth needs Chrome, and the page must be served over HTTPS (or be on localhost).",
+      }),
+    ),
+  );
   const el = h(
     "section",
     { class: "view connect-view" },
@@ -58,6 +109,7 @@ export function createConnectView(app: App): View {
     problem,
     buttons,
     noBt,
+    help,
   );
 
   return {
@@ -65,34 +117,39 @@ export function createConnectView(app: App): View {
     render(): void {
       const st = app.state;
       const busy = st === "connecting" || st === "handshaking";
+      // With data from an earlier connection this is a card above the Status tab, not a screen.
+      const compact = hasLastKnownData(app);
+      el.classList.toggle("compact", compact);
+      setText(heading, compact ? "Connection" : "Connect to your tracker");
+      intro.hidden = compact;
+      pairing.hidden = compact && !busy;
       btBtn.disabled = busy;
       demoBtn.disabled = busy;
       cancelBtn.hidden = !busy;
       progress.hidden = !busy;
+      // Chrome may delay pairing until the first write, which happens while "handshaking".
       setText(
         progress,
         st === "connecting"
-          ? "Connecting… If a pairing dialog appears, enter the passkey from the tracker's LCD."
+          ? "Connecting…"
           : st === "handshaking"
-            ? "Connected. Reading the tracker's state…"
+            ? "Connected. Reading the tracker's state… (a pairing prompt can still appear now)"
             : "",
       );
-      let msg = app.notice;
-      if (!msg && st === "proto_mismatch") {
-        msg = "This tracker speaks a protocol version this app does not know. Update the app.";
-      }
-      if (!msg && app.client?.lastDisconnectReason) {
-        msg = `Disconnected: ${app.client.lastDisconnectReason}`;
-      }
+      const msg = connectMessage({
+        state: st,
+        notice: app.notice,
+        deviceProto: app.client?.hello?.proto,
+        disconnectReason: app.client?.lastDisconnectReason,
+      });
       problem.hidden = !msg;
       setText(problem, msg ?? "");
       const hasBt = typeof navigator !== "undefined" && "bluetooth" in navigator;
-      btBtn.title = hasBt ? "" : "Web Bluetooth is not available in this browser";
-      noBt.hidden = hasBt;
-      setText(
-        noBt,
-        "Web Bluetooth is not available in this browser. Use Chrome on Android. You can still try the demo.",
-      );
+      const isSecure = typeof window === "undefined" || window.isSecureContext !== false;
+      const btHelp = webBluetoothHelp(hasBt, isSecure);
+      btBtn.title = btHelp ? "Web Bluetooth is not available here" : "";
+      noBt.hidden = !btHelp;
+      setText(noBt, btHelp ?? "");
     },
   };
 }

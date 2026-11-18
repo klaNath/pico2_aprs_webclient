@@ -24,6 +24,15 @@ export function levelFraction(db: number | undefined): number {
   return Math.min(1, Math.max(0, (db + 60) / 60));
 }
 
+/** GPS fix as words (§8.1: 0 = no fix, 2 = 2D, 3 = 3D). */
+export function fixLabel(fix: number | undefined): string {
+  if (fix === undefined) return NO_VALUE;
+  if (fix === 0) return "no fix";
+  if (fix === 2) return "2D fix";
+  if (fix === 3) return "3D fix";
+  return `fix ${fix}`;
+}
+
 export function createStatusView(app: App): View {
   const big = h("div", { class: "tx-big" });
   const bigDetail = h("div", { class: "muted" });
@@ -35,6 +44,14 @@ export function createStatusView(app: App): View {
   );
   const dl = h("dl", { class: "kv" });
   const warn = h("p", { class: "problem", attrs: { role: "alert" } });
+  const demo = h("div", {
+    class: "card note demo-note",
+    text: "Demo: simulated device. Nothing is sent on the air.",
+  });
+  const beaconHint = h("p", {
+    class: "muted hint",
+    text: "Beacon counts include dry runs (beacons built while the tracker could not transmit).",
+  });
   const disconnect = h("button", {
     class: "btn",
     text: "Disconnect",
@@ -44,12 +61,14 @@ export function createStatusView(app: App): View {
   const el = h(
     "section",
     { class: "view" },
+    demo,
     h("div", { class: "card" }, big, bigDetail),
     warn,
     h(
       "div",
       { class: "card" },
       dl,
+      beaconHint,
       h("div", { class: "meter-row" }, h("span", { text: "Level" }), meter),
     ),
     h("div", { class: "row" }, disconnect),
@@ -62,7 +81,10 @@ export function createStatusView(app: App): View {
     render(): void {
       const s = app.status;
       const stale = app.statusStale;
-      const b = txBadge(app.state, stale, s);
+      const b = txBadge(app.state, stale, s, app.mock);
+      demo.hidden = !app.mock;
+      disconnect.hidden =
+        app.state !== "ready" && app.state !== "connecting" && app.state !== "handshaking";
       big.className = `tx-big ${b.cls}`;
       setText(big, b.label);
       setText(bigDetail, b.detail);
@@ -75,6 +97,7 @@ export function createStatusView(app: App): View {
       const next = stale
         ? undefined
         : nextBeaconIn(s?.next_beacon_s, app.client?.lastStatusAt, Date.now());
+      const dryRun = !stale && s?.tx_ready === false ? " (dry run)" : "";
       const onOff = (x: boolean | undefined): string =>
         stale || x === undefined ? NO_VALUE : x ? "On" : "Off";
       setChildren(
@@ -86,17 +109,22 @@ export function createStatusView(app: App): View {
           "GPS fix",
           stale
             ? NO_VALUE
-            : `${s?.fix === 0 ? "none" : (s?.fix ?? NO_VALUE)}${s?.sats !== undefined ? ` · ${s.sats} sats` : ""}`,
+            : `${fixLabel(s?.fix)}${s?.sats !== undefined ? ` · ${s.sats} sats` : ""}`,
         ),
         ...row("Position", pos),
         ...row("Next beacon", next === undefined ? NO_VALUE : fmtAge(next)),
+        // §8.1: last_tx_s and tx_count count dry runs too, so they say "beacon", not "transmit".
         ...row(
-          "Last transmit",
-          stale ? NO_VALUE : s?.last_tx_s === undefined ? "never" : `${fmtAge(s.last_tx_s)} ago`,
+          "Last beacon",
+          stale
+            ? NO_VALUE
+            : s?.last_tx_s === undefined
+              ? "never"
+              : `${fmtAge(s.last_tx_s)} ago${dryRun}`,
         ),
         ...row(
-          "Received / sent",
-          stale ? NO_VALUE : `${s?.rx_count ?? NO_VALUE} / ${s?.tx_count ?? NO_VALUE}`,
+          "Received / Beacons",
+          stale ? NO_VALUE : `${s?.rx_count ?? NO_VALUE} / ${s?.tx_count ?? NO_VALUE}${dryRun}`,
         ),
         ...row("SD card", v(s?.sd)),
         ...row("Dropped rx", v(s?.dropped)),

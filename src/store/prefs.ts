@@ -23,7 +23,7 @@ export const DEFAULT_PREFS: PrefsData = {
   radarRangeKm: 50,
 };
 
-const KEY = "pico2aprs.prefs";
+export const PREFS_KEY = "pico2aprs.prefs";
 
 function clampInt(v: unknown, min: number, max: number, fallback: number): number {
   return typeof v === "number" && Number.isFinite(v)
@@ -42,20 +42,50 @@ export function sanitizePrefs(raw: unknown): PrefsData {
   };
 }
 
+/** The part of localStorage that Prefs uses (a fake in tests). */
+export interface PrefsStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+/** localStorage, or undefined when even touching it throws (blocked site data). */
+function defaultStorage(): PrefsStorage | null {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
 export class Prefs {
   private data: PrefsData;
   private readonly listeners = new Set<() => void>();
+  private readonly storage: PrefsStorage | null;
 
-  constructor() {
-    this.data = this.load();
+  /** `storage` is localStorage unless a test passes a fake (null = no storage at all). */
+  constructor(storage: PrefsStorage | null = defaultStorage()) {
+    this.storage = storage;
+    this.data = this.load() ?? { ...DEFAULT_PREFS };
+    // Another tab of the app changed a preference: take it in instead of overwriting it later.
+    if (typeof window !== "undefined") {
+      window.addEventListener("storage", (ev) => {
+        if (ev.key !== null && ev.key !== PREFS_KEY) return;
+        this.data = this.load() ?? this.data;
+        for (const l of this.listeners) l();
+      });
+    }
   }
 
   get<K extends keyof PrefsData>(key: K): PrefsData[K] {
     return this.data[key];
   }
 
+  /**
+   * Changes one value. The stored copy is read again first, so changes another tab made to other
+   * keys are kept (last write wins per key, not for the whole object).
+   */
   set<K extends keyof PrefsData>(key: K, value: PrefsData[K]): void {
-    this.data = sanitizePrefs({ ...this.data, [key]: value });
+    this.data = sanitizePrefs({ ...(this.load() ?? this.data), [key]: value });
     this.save();
     for (const l of this.listeners) l();
   }
@@ -65,18 +95,20 @@ export class Prefs {
     return () => this.listeners.delete(cb);
   }
 
-  private load(): PrefsData {
+  /** The stored preferences, or undefined when storage is missing or unreadable. */
+  private load(): PrefsData | undefined {
     try {
-      const text = localStorage.getItem(KEY);
+      const text = this.storage?.getItem(PREFS_KEY);
+      if (text === undefined || text === null) return undefined;
       return sanitizePrefs(text ? JSON.parse(text) : undefined);
     } catch {
-      return { ...DEFAULT_PREFS };
+      return undefined;
     }
   }
 
   private save(): void {
     try {
-      localStorage.setItem(KEY, JSON.stringify(this.data));
+      this.storage?.setItem(PREFS_KEY, JSON.stringify(this.data));
     } catch {
       // Storage unavailable: keep the value in memory only.
     }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { sanitizePrefs, DEFAULT_PREFS, LOG_LIMIT_MAX, LOG_LIMIT_MIN } from "../src/store/prefs.ts";
 import { txBadge } from "../src/ui/header.ts";
-import { levelFraction, nextBeaconIn } from "../src/ui/statusView.ts";
+import { fixLabel, levelFraction, nextBeaconIn } from "../src/ui/statusView.ts";
 import { fmtAge, fmtDistance } from "../src/ui/format.ts";
 
 describe("txBadge (tx_ready must never look ready when it cannot be trusted)", () => {
@@ -29,8 +29,42 @@ describe("txBadge (tx_ready must never look ready when it cannot be trusted)", (
     expect(b.detail).toContain("TX not enabled");
     expect(txBadge("ready", false, { tx_ready: false, sw: false }).detail).toContain("switch");
   });
-  it("treats a missing tx_ready as not ready", () => {
-    expect(txBadge("ready", false, {}).cls).toBe("tx-dry");
+  // A status without a boolean tx_ready says nothing about transmitting. Calling that "TX OFF
+  // (dry run)" would be a claim the device never made, so it is unknown ("TX ?") instead.
+  it("treats a missing tx_ready as unknown, not as a dry run", () => {
+    const b = txBadge("ready", false, {});
+    expect(b.cls).toBe("tx-unknown");
+    expect(b.label).toBe("TX ?");
+    expect(b.detail).toBe("The device did not report whether it will transmit");
+    // A non-boolean that slipped through is unknown as well.
+    expect(txBadge("ready", false, { tx_ready: "yes" as unknown as boolean }).cls).toBe(
+      "tx-unknown",
+    );
+  });
+  it("shows a Demo as SIMULATED, never as TX READY", () => {
+    const b = txBadge("ready", false, ready, true);
+    expect(b.cls).toBe("tx-sim");
+    expect(b.label).toBe("SIMULATED");
+    expect(b.label).not.toContain("READY");
+    expect(b.detail).toContain("Nothing is sent on the air");
+  });
+  it("keeps a Demo at TX ? when it is not connected or stale", () => {
+    expect(txBadge("disconnected", false, ready, true).label).toBe("TX ?");
+    expect(txBadge("ready", true, ready, true).label).toBe("TX ?");
+    expect(txBadge("ready", false, undefined, true).label).toBe("TX ?");
+  });
+  it("is TX ? after a disconnect even when the last status said ready", () => {
+    expect(txBadge("disconnected", false, ready).label).toBe("TX ?");
+  });
+});
+
+describe("fixLabel", () => {
+  it("names the GPS fix (§8.1: 0 none, 2 = 2D, 3 = 3D)", () => {
+    expect(fixLabel(0)).toBe("no fix");
+    expect(fixLabel(2)).toBe("2D fix");
+    expect(fixLabel(3)).toBe("3D fix");
+    expect(fixLabel(1)).toBe("fix 1");
+    expect(fixLabel(undefined)).toBe("—");
   });
 });
 
