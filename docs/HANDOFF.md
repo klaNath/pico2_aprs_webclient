@@ -121,11 +121,19 @@
 3. 間違ったパスキー、ダイアログの取り消し、ペアリングを OS 側で削除した後の挙動(Issue #5 のテスト計画)
 4. 接続後の rx の連続受信、`dropped`、Settings の書き込み(Q1 のテスト用コールサインに替えられる環境で)、schema の読み込み時間
 5. 戻るボタンと pull-to-refresh の抑止(作業 4 の未確認)を確かめる。`PAIRING_HINT` と接続待ちの表示には「通知の『Pairing request』を開く」を足した(Android 実機で表示を確認済み。「Do it soon, because the tracker drops a connection that stays unpaired」は、ファームウェア側の 60 秒の切断が実機では未確認のままの記述)
-6. 仕様側: Issue #5 にファームウェア側の返信がある(`docs/ble-protocol.md` 0.4 §4、ブランチ `ble-issues-1-6`)。60 秒以内に認証されないと切られ、パスキー待ちの目安になる。アプリの `hello` の再送(3 秒 × 5 回)は、リンクが切れるか 60 秒たつまで続ける案。`npm run spec:update` でピンを進めて確認する(まだ進めていない)
+6. 仕様 v0.4 への対応(2026-11-18 に済み。下の「仕様 v0.4 への対応」)。残りは実機での確認: `hello` の再送が 60 秒続くこと、書き込み失敗後の `\n`(§5.3)の挙動
 
 ### 作業 6(PWA と Pages)
 
 plan.md の順。`vite.config.ts`(dev だけ CSP を外すプラグインがある)に `vite-plugin-pwa` を足す。`base` は Pages のサブパス(相対)。manifest とアイコン(`public/` は Vite の雛形のまま)、`registerType` は `prompt`(接続中に勝手に再読み込みしない)。CSP に `worker-src 'self'` と `manifest-src 'self'` は入れてある。非公開リポジトリで Pages が使えるかを確かめる。公開する場合はサブモジュールの URL(非公開)を README に書く。
+
+## 仕様 v0.4 への対応(ピンを `f6e3364` → `f8cd818`)
+
+- §8.2/§8.4(`obj`): 局の表のキーを `stationKey(src, obj)`(`obj:名前`)にした。オブジェクトとアイテムは局とは別の行(`StationRow.obj`)。オブジェクトの位置とシンボルは、パケットを読めればそこから、読めなければ装置の `lat`/`lon`/`sym`。送信局にはオブジェクトの行が付かない(送信局の行は局のパケットだけを数える)。Stations に「OBJECT」の印、詳細の見出しは「Object」。`latestPacket(feed, src, obj)` は局の側からオブジェクトのパケットを除く。`stations.list` の `obj: true` の行は `own` にしない
+- §4(`hello`): 再送は 3 秒ごとに 60 秒まで(`HELLO_WINDOW_MS`。以前は 5 回 = 約 15 秒)。書き込みが失敗しても、時間内ならリンクが生きている限り再送する(Chrome が認証前の書き込みを reject する場合に備える)。リンクが切れたら終わり。`helloAttempts` は `helloWindowMs` に置き換えた
+- §5.3(立て直し): 書き込みが失敗したら、次の要求の前に `\n` を 1 つだけ送る。装置が断片を持っていれば `bad_json`(id なし)が 1 つ返るので、それは要求の失敗にしない(`expectBadJson`。次の応答で解除)。新しい接続では不要
+- 未対応(仕様どおり、変更不要と判断): §8.6 の `busy`(1 回だけ 500 ms 後に再送する今の方針で足りる。1 つずつ待って送るので普通は来ない)、§9.1 の `callsign`(小文字と空白は入力時に弾いている)、§8.1 の `call`(省略可の型。未設定のときの Status の表示は未確認)
+- `PAIRING_HINT`: 「LCD に出てから 30 秒以内に入力」「消えたら、または 1 分ほどで切れたら接続し直して新しいパスキー」
 
 ## 環境の注意
 

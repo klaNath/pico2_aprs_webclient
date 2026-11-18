@@ -113,6 +113,7 @@ describe("connect messages", () => {
     expect(PAIRING_HINT).toContain("may ask you to pair");
     expect(PAIRING_HINT).toContain("notification");
     expect(PAIRING_HINT).toContain("passkey");
+    expect(PAIRING_HINT).toContain("30 seconds");
   });
   it("tells a missing browser from a page that is not HTTPS", () => {
     expect(webBluetoothHelp(true, true)).toBeUndefined();
