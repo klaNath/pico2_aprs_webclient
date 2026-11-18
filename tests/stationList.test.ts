@@ -8,6 +8,7 @@ import {
   buildItems,
   detailRows,
   filterItems,
+  isAtPosition,
   latestPacket,
   parseSymbolChars,
   rowText,
@@ -73,6 +74,27 @@ describe("buildItems", () => {
     expect(i!.symbolName).toBe(NO_VALUE);
     expect(i!.category).toBe("other");
   });
+  it("the own entry gets no distance, bearing or radar dot even when it has a position", () => {
+    const [i] = buildItems([row("Q1TEST-7", { own: true, lat: 35.7, lon: 139.8 })], me);
+    expect(i!.pos).toEqual({ lat: 35.7, lon: 139.8 });
+    expect(i!.distanceM).toBeUndefined();
+    expect(i!.bearing).toBeUndefined();
+    expect(rowText(i!, NOW).distance).toBe(NO_VALUE);
+  });
+  it("coordinates out of range are ignored: latitude and longitude, both signs, edges are fine", () => {
+    const pos = (lat: number, lon: number) => buildItems([row("Q1X", { lat, lon })], me)[0]!.pos;
+    expect(pos(0, 180.001)).toBeUndefined();
+    expect(pos(0, -180.001)).toBeUndefined();
+    expect(pos(90.001, 0)).toBeUndefined();
+    expect(pos(-90.001, 0)).toBeUndefined();
+    expect(pos(0, 181)).toBeUndefined();
+    expect(pos(90, 180)).toEqual({ lat: 90, lon: 180 });
+    expect(pos(-90, -180)).toEqual({ lat: -90, lon: -180 });
+    expect(pos(NaN, 0)).toBeUndefined();
+    expect(pos(0, Infinity)).toBeUndefined();
+    const [half] = buildItems([row("Q1HALF", { lat: 10 })], me);
+    expect(half!.pos).toBeUndefined();
+  });
   it("a distance of 0 is kept (not treated as missing)", () => {
     const [i] = buildItems([row("Q1HERE", { lat: me.lat, lon: me.lon })], me);
     expect(i!.distanceM).toBe(0);
@@ -118,6 +140,39 @@ describe("sortItems", () => {
   it("count: most packets first", () => {
     expect(names("count")).toEqual(["Q1TEST-7", "Q1NOPOS", "Q1AAA-9", "Q1FAR", "Q1BBB"]);
   });
+  it("ties are broken by callsign (recent and count), whatever the input order", () => {
+    const tie = (src: string, over: Partial<StationRow> = {}): StationRow =>
+      row(src, { lastAt: NOW - 1000, count: 4, ...over });
+    const shuffled = buildItems([tie("Q1CCC"), tie("Q1AAA"), tie("Q1BBB")], me);
+    expect(sortItems(shuffled, "recent").map((i) => i.src)).toEqual(["Q1AAA", "Q1BBB", "Q1CCC"]);
+    expect(sortItems([...shuffled].reverse(), "recent").map((i) => i.src)).toEqual([
+      "Q1AAA",
+      "Q1BBB",
+      "Q1CCC",
+    ]);
+    expect(sortItems(shuffled, "count").map((i) => i.src)).toEqual(["Q1AAA", "Q1BBB", "Q1CCC"]);
+    expect(sortItems([...shuffled].reverse(), "count").map((i) => i.src)).toEqual([
+      "Q1AAA",
+      "Q1BBB",
+      "Q1CCC",
+    ]);
+  });
+  it("count: the same count falls back to recency before the callsign", () => {
+    const items = buildItems(
+      [
+        row("Q1AAA", { count: 2, lastAt: NOW - 5000 }),
+        row("Q1BBB", { count: 2, lastAt: NOW - 1000 }),
+        row("Q1CCC", { count: 3, lastAt: NOW - 9000 }),
+      ],
+      me,
+    );
+    expect(sortItems(items, "count").map((i) => i.src)).toEqual(["Q1CCC", "Q1BBB", "Q1AAA"]);
+  });
+  it("distance ties are broken by callsign too", () => {
+    const at = { lat: 35.7, lon: 139.8 };
+    const items = buildItems([row("Q1ZZZ", at), row("Q1AAA", at)], me);
+    expect(sortItems(items, "distance").map((i) => i.src)).toEqual(["Q1AAA", "Q1ZZZ"]);
+  });
   it("does not modify the input", () => {
     const copy = [...items];
     sortItems(items, "call");
@@ -159,9 +214,63 @@ describe("texts", () => {
         items.find((i) => i.src === "Q1NOPOS")!,
         NOW,
       ).distance,
-    ).toBe(NO_VALUE);
+    ).toBe("No position");
     expect(ariaText(items.find((i) => i.own)!)).toContain("this tracker");
-    expect(ariaText(items.find((i) => i.src === "Q1NOPOS")!)).toContain("position unknown");
+    expect(ariaText(items.find((i) => i.src === "Q1NOPOS")!)).toContain("no position");
+  });
+  it("a station without a position says so, and has no bearing text", () => {
+    const t = rowText(buildItems([row("Q1NOPOS")], me)[0]!, NOW);
+    expect(t.distance).toBe("No position");
+    expect(t.bearing).toBe("");
+  });
+  it("without a GPS fix a station that has a position is not 'No position'", () => {
+    const [i] = buildItems([row("Q1BBB", { lat: 35.7, lon: 139.8 })], undefined);
+    const t = rowText(i!, NOW);
+    expect(t.distance).toBe(NO_VALUE);
+    expect(t.bearing).toBe("");
+    expect(ariaText(i!)).toContain("distance unknown");
+  });
+  it("ariaText replaces the visible row, so it carries age, count, level and symbol", () => {
+    const items = buildItems(rows, me);
+    const a = items.find((i) => i.src === "Q1AAA-9")!;
+    const text = ariaText(a, NOW);
+    expect(text).toMatch(/^Q1AAA-9, 1\.\d km, SSW \(\d+°\)/);
+    expect(text).toContain("Car");
+    expect(text).toContain("heard 2 min ago");
+    expect(text).toContain("3 packets");
+    const b = items.find((i) => i.src === "Q1BBB")!;
+    expect(ariaText(b, NOW)).toContain("level -27.5 dB");
+    expect(ariaText(b, NOW)).toContain("1 packet,");
+    expect(ariaText(b, NOW)).not.toContain("1 packets");
+    expect(ariaText(b, NOW)).not.toContain("Car");
+    // Without `now` (the radar, whose label should not change every second) there is no age.
+    expect(ariaText(a)).not.toContain("heard");
+    expect(ariaText(a)).toContain("Car");
+  });
+  it("the own entry's description says this tracker and includes its age and count", () => {
+    const own = buildItems(rows, me).find((i) => i.own)!;
+    expect(ariaText(own, NOW)).toBe("Q1TEST-7, this tracker, heard 5 min ago, 1 packet");
+  });
+  it("a station at your position: no bearing, said in words", () => {
+    const [i] = buildItems([row("Q1HERE", { lat: me.lat, lon: me.lon })], me);
+    expect(i!.distanceM).toBe(0);
+    expect(i!.bearing).toBeUndefined(); // the bearing of two identical points is meaningless
+    expect(isAtPosition(i!)).toBe(true);
+    const t = rowText(i!, NOW);
+    expect(t.distance).toBe("At your position");
+    expect(t.bearing).toBe("");
+    expect(t.distance).not.toContain("0 m");
+    expect(ariaText(i!)).toContain("at your position");
+    expect(ariaText(i!)).not.toContain("N (0°)");
+    const detail = detailRows(i!, undefined, NOW, me);
+    expect(detail.find((r) => r.label === "Distance")!.value).toBe("At your position");
+    expect(detail.find((r) => r.label === "Bearing")!.value).toBe(NO_VALUE);
+  });
+  it("one metre away still has a bearing", () => {
+    const [i] = buildItems([row("Q1NEAR", { lat: me.lat + 0.00003, lon: me.lon })], me);
+    expect(i!.distanceM).toBeGreaterThan(1);
+    expect(isAtPosition(i!)).toBe(false);
+    expect(i!.bearing).toBeCloseTo(0, 3);
   });
 });
 

@@ -189,21 +189,26 @@ function fmtDirectivity(deg: number | null): string {
 
 // ---- weather ---------------------------------------------------------------------------------
 
-/** Key values of a weather report on one line ("12.3 °C, 65 %, 1013 hPa, wind 180° 3.2 m/s"). */
+/**
+ * Key values of a weather report on one line ("12.3 °C, 65 %, 1013 hPa, wind 180° 3.2 m/s").
+ * Rain is the amount of the last hour (a depth, not a rate). With no wind (speed 0) the direction
+ * is left out: APRS sends 000 for it, which would read as a north wind.
+ */
 export function weatherSummary(w: WeatherData): string {
   const parts: string[] = [];
   if (w.tempC !== undefined) parts.push(`${num(w.tempC)} °C`);
   if (w.humidity !== undefined) parts.push(`${num(w.humidity, 0)} %`);
   if (w.pressureHpa !== undefined) parts.push(`${num(w.pressureHpa)} hPa`);
   if (w.windSpeedMs !== undefined || w.windDirDeg !== undefined) {
-    const dir = w.windDirDeg !== undefined ? `${num(w.windDirDeg, 0)}° ` : "";
-    const speed = w.windSpeedMs !== undefined ? `${num(w.windSpeedMs)} m/s` : "";
-    const gust = w.gustMs !== undefined ? ` (gust ${num(w.gustMs)})` : "";
+    const calm = w.windSpeedMs === 0;
+    const dir = !calm && w.windDirDeg !== undefined ? `${num(w.windDirDeg, 0)}° ` : "";
+    const speed = w.windSpeedMs === undefined ? "" : calm ? "calm" : `${num(w.windSpeedMs)} m/s`;
+    const gust = w.gustMs !== undefined ? ` (gust ${num(w.gustMs)} m/s)` : "";
     parts.push(`wind ${dir}${speed}${gust}`.trim());
   } else if (w.gustMs !== undefined) {
     parts.push(`gust ${num(w.gustMs)} m/s`);
   }
-  if (w.rain1hMm !== undefined) parts.push(`rain ${num(w.rain1hMm)} mm/h`);
+  if (w.rain1hMm !== undefined) parts.push(`rain ${num(w.rain1hMm)} mm (1 h)`);
   return parts.length > 0 ? parts.join(", ") : "no values";
 }
 
@@ -217,7 +222,10 @@ function weatherRows(w: WeatherData): DetailRow[] {
   const add = (label: string, v: number | undefined, unit: string, digits = 1): void => {
     if (v !== undefined) rows.push({ label, value: `${num(v, digits)} ${unit}` });
   };
-  add("Wind direction", w.windDirDeg, "°", 0);
+  // No wind: the direction field is 000 and means nothing.
+  if (w.windDirDeg !== undefined && w.windSpeedMs !== 0) {
+    rows.push({ label: "Wind direction", value: `${num(w.windDirDeg, 0)}°` });
+  }
   add("Wind speed", w.windSpeedMs, "m/s");
   add("Gust", w.gustMs, "m/s");
   add("Temperature", w.tempC, "°C");
@@ -227,7 +235,7 @@ function weatherRows(w: WeatherData): DetailRow[] {
   add("Humidity", w.humidity, "%", 0);
   add("Pressure", w.pressureHpa, "hPa");
   add("Luminosity", w.luminosityWm2, "W/m²", 0);
-  add("Snow", w.snowMm, "mm");
+  add("Snow, 24 hours", w.snowMm, "mm");
   if (w.extra) rows.push({ label: "Weather unit", value: oneLine(w.extra) });
   return rows;
 }
@@ -540,23 +548,48 @@ export function exportFileName(now: Date, ext: "json" | "txt"): string {
   return `pico2aprs-feed-${date}-${time}.${ext}`;
 }
 
-/** One packet per line, as the device sent it (`<0xHH>` kept as is). */
-export function buildTnc2Log(items: readonly FeedItem[]): string {
-  if (items.length === 0) return "";
-  return `${items.map((i) => i.msg.tnc2.replace(/[\r\n]+/g, " ")).join("\n")}\n`;
+export interface Tnc2Options {
+  /**
+   * Also write this tracker's own transmissions (`tx`, dry runs included), each after a comment
+   * line. Off by default: a TNC2 log has no direction and no time, so a beacon that was only
+   * sent (or only tried as a dry run) would look like a received packet in another tool.
+   */
+  includeTx?: boolean;
 }
 
-/** The feed as JSON: the device's fields, plus `seq`, `dir`, `at` (UTC) and the parsed `type`. */
+/** The items a TNC2 log written with `opts` contains. */
+export function tnc2Items(items: readonly FeedItem[], opts: Tnc2Options = {}): FeedItem[] {
+  return items.filter((i) => i.kind === "rx" || opts.includeTx === true);
+}
+
+/**
+ * One packet per line, as the device sent it (`<0xHH>` kept as is). Only packets that were
+ * received (rx) unless `includeTx`; a tx line is then preceded by `# tx` or `# tx (dry run)`.
+ */
+export function buildTnc2Log(items: readonly FeedItem[], opts: Tnc2Options = {}): string {
+  const lines: string[] = [];
+  for (const i of tnc2Items(items, opts)) {
+    if (i.kind === "tx") lines.push(i.msg.t === "tx" && i.msg.dry ? "# tx (dry run)" : "# tx");
+    lines.push(i.msg.tnc2.replace(/[\r\n]+/g, " "));
+  }
+  return lines.length === 0 ? "" : `${lines.join("\n")}\n`;
+}
+
+/**
+ * The feed as JSON. Each item has the app's `seq`, `dir`, `at` (UTC) and parsed `type`, and the
+ * device's message, untouched except for `t`, under `msg` (so a key the firmware adds later can
+ * never overwrite one of the app's).
+ */
 export function buildFeedJson(items: readonly FeedItem[], now: Date): string {
   const out = items.map((i) => {
-    const { t, ...fields } = i.msg;
+    const { t, ...msg } = i.msg;
     void t;
     return {
       seq: i.seq,
       dir: i.kind,
       at: new Date(i.at).toISOString(),
       type: i.parsed.data.type,
-      ...fields,
+      msg,
     };
   });
   return JSON.stringify(

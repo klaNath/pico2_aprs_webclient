@@ -1,15 +1,29 @@
 import { describe, expect, it } from "vitest";
 import { bearingDeg, distanceM } from "../src/aprs/geo.ts";
 import {
+  AT_POSITION_M,
   CENTER,
+  COMPASS_R,
+  fallbackBearing,
+  FALLBACK_BEARING_DEG,
   formatRingLabel,
   isOutOfRange,
+  MAX_LABEL_CHARS,
   MIN_DOT_FRACTION,
+  nearestStation,
+  OUT_OF_RANGE_R,
   OUTER_R,
+  OWN_MARK_R,
+  OWN_MARK_STROKE,
   placeStation,
   polarToXY,
   radiusFraction,
   ringValues,
+  shortLabel,
+  tabStops,
+  unitsForPx,
+  VIEW_SIZE,
+  type HitPoint,
 } from "../src/ui/radarGeometry.ts";
 
 const MAX = 50_000;
@@ -21,8 +35,16 @@ describe("radiusFraction", () => {
   });
   it.each(["linear", "log"] as const)("clamps beyond max to 1 (%s)", (scale) => {
     expect(radiusFraction(MAX * 10, MAX, scale)).toBe(1);
-    expect(radiusFraction(Infinity, MAX, scale)).toBe(0); // not finite: treated as invalid
   });
+  it.each(["linear", "log"] as const)(
+    "a distance of Infinity is beyond the range: 1 (%s)",
+    (scale) => {
+      // Too far to be drawn is the outer edge (out of range), not "invalid" and not the centre.
+      expect(radiusFraction(Infinity, MAX, scale)).toBe(1);
+      expect(radiusFraction(-Infinity, MAX, scale)).toBe(0);
+      expect(radiusFraction(NaN, MAX, scale)).toBe(0);
+    },
+  );
   it("linear is proportional", () => {
     expect(radiusFraction(12_500, MAX, "linear")).toBeCloseTo(0.25, 12);
   });
@@ -79,21 +101,54 @@ describe("polarToXY (north up, clockwise)", () => {
 });
 
 describe("placeStation", () => {
-  it("keeps a station at distance 0 off the centre marker", () => {
-    const p = placeStation(0, 0, MAX, "log");
-    expect(p.frac).toBe(MIN_DOT_FRACTION);
-    expect(p.outOfRange).toBe(false);
+  it("keeps a station at distance 0 clear of the marker of this tracker", () => {
+    for (const scale of ["log", "linear"] as const) {
+      for (const bearing of [0, 45, 135, 200, 315]) {
+        const p = placeStation(0, bearing, MAX, scale);
+        expect(p.outOfRange).toBe(false);
+        // On the screen the dot's centre is further out than the edge of the own-position ring
+        // (radius plus half of its stroke), so the dot is not under it.
+        const dist = Math.hypot(p.x - CENTER, p.y - CENTER);
+        expect(dist).toBeGreaterThan(OWN_MARK_R + OWN_MARK_STROKE / 2);
+        expect(dist).toBeCloseTo(OUTER_R * MIN_DOT_FRACTION, 9);
+      }
+    }
+  });
+  it("a station at your position (no bearing) is not drawn due north", () => {
+    for (const b of [undefined, NaN]) {
+      const p = placeStation(0, b, MAX, "log");
+      expect(Math.abs(p.x - CENTER)).toBeGreaterThan(1); // not straight up
+      expect(p.x).toBeCloseTo(polarToXY(p.frac, FALLBACK_BEARING_DEG).x, 9);
+    }
+  });
+  it("fallbackBearing is stable, never north, and spreads callsigns around", () => {
+    expect(fallbackBearing("Q1AAA")).toBe(fallbackBearing("Q1AAA"));
+    const seen = new Set<number>();
+    for (let i = 0; i < 64; i++) {
+      const b = fallbackBearing(`Q1T${i}`);
+      expect(b % 45).toBe(22.5);
+      seen.add(b);
+    }
+    expect(seen.size).toBeGreaterThan(4);
+    expect(AT_POSITION_M).toBeGreaterThan(0);
   });
   it("max exactly is in range and on the rim", () => {
     const p = placeStation(MAX, 90, MAX, "linear");
     expect(p.outOfRange).toBe(false);
     expect(p.frac).toBeCloseTo(1, 12);
   });
-  it("beyond max is out of range and drawn on the rim, in the right direction", () => {
+  it("beyond max is out of range and drawn outside the ring, in the right direction", () => {
     const p = placeStation(MAX + 1, 270, MAX, "log");
     expect(p.outOfRange).toBe(true);
-    expect(p.frac).toBe(1);
-    expect(p.x).toBeCloseTo(CENTER - OUTER_R, 9);
+    expect(p.frac).toBeCloseTo(OUT_OF_RANGE_R / OUTER_R, 12);
+    expect(p.x).toBeCloseTo(CENTER - OUT_OF_RANGE_R, 9);
+    expect(placeStation(Infinity, 0, MAX, "log").outOfRange).toBe(true);
+  });
+  it("the out-of-range circle is outside the outer ring and inside the compass letters", () => {
+    expect(OUT_OF_RANGE_R).toBeGreaterThan(OUTER_R + 6);
+    // Room for a mark of radius 7 and a letter about 9 units high between them.
+    expect(COMPASS_R - 4.5).toBeGreaterThan(OUT_OF_RANGE_R + 7);
+    expect(COMPASS_R + 6).toBeLessThan(VIEW_SIZE / 2);
   });
   it("a bearing that is not finite does not produce NaN", () => {
     const p = placeStation(1000, NaN, MAX, "linear");
@@ -159,5 +214,105 @@ describe("formatRingLabel", () => {
     expect(formatRingLabel(1500)).toBe("1.5 km");
     expect(formatRingLabel(50_000)).toBe("50 km");
     expect(formatRingLabel(NaN)).toBe("");
+  });
+});
+
+describe("nearestStation (taps)", () => {
+  const pt = (id: string, x: number, y: number): HitPoint => ({ id, x, y });
+
+  it("picks the nearest point within the radius", () => {
+    const pts = [pt("a", 100, 100), pt("b", 110, 100), pt("c", 150, 150)];
+    expect(nearestStation(pts, 102, 100, 14)?.id).toBe("a");
+    expect(nearestStation(pts, 108, 100, 14)?.id).toBe("b");
+    expect(nearestStation(pts, 149, 149, 14)?.id).toBe("c");
+  });
+  it("overlapping dots: always the one nearest to the tap, not the one drawn first", () => {
+    // Two dots 6 units apart (closer than one fingertip). Tapping on either picks that one.
+    const pts = [pt("a", 100, 100), pt("b", 106, 100)];
+    expect(nearestStation(pts, 99, 100, 14)?.id).toBe("a");
+    expect(nearestStation(pts, 107, 100, 14)?.id).toBe("b");
+    expect(nearestStation(pts, 102.9, 100, 14)?.id).toBe("a");
+    expect(nearestStation(pts, 103.1, 100, 14)?.id).toBe("b");
+    expect(nearestStation([...pts].reverse(), 99, 100, 14)?.id).toBe("a");
+  });
+  it("a crowd: every dot is picked by a tap on its own centre", () => {
+    const pts: HitPoint[] = [];
+    for (let i = 0; i < 64; i++) {
+      const p = placeStation(500 + i * 700, (i * 137.5) % 360, MAX, "log");
+      pts.push(pt(`Q1S${i}`, p.x, p.y));
+    }
+    for (const p of pts) expect(nearestStation(pts, p.x, p.y, 14)?.id).toBe(p.id);
+  });
+  it("identical points: one of them, the later one (drawn on top)", () => {
+    const pts = [pt("a", 100, 100), pt("b", 100, 100)];
+    expect(nearestStation(pts, 100, 100, 14)?.id).toBe("b");
+    expect(nearestStation(pts, 103, 100, 14)?.id).toBe("b");
+  });
+  it("nothing within the radius: undefined (the radius is inclusive)", () => {
+    const pts = [pt("a", 100, 100)];
+    expect(nearestStation(pts, 100, 114.1, 14)).toBeUndefined();
+    expect(nearestStation(pts, 100, 114, 14)?.id).toBe("a");
+    expect(nearestStation(pts, 300, 300, 14)).toBeUndefined();
+  });
+  it("no points, or a tap or radius that is not a number", () => {
+    expect(nearestStation([], 1, 1, 14)).toBeUndefined();
+    expect(nearestStation([pt("a", 1, 1)], NaN, 1, 14)).toBeUndefined();
+    expect(nearestStation([pt("a", 1, 1)], 1, 1, NaN)).toBeUndefined();
+    expect(nearestStation([pt("a", 1, 1)], 1, 1, -1)).toBeUndefined();
+  });
+});
+
+describe("unitsForPx (sizes that must not shrink with the screen)", () => {
+  it("converts screen pixels to viewBox units", () => {
+    expect(unitsForPx(24, 240)).toBe(24);
+    expect(unitsForPx(24, 480)).toBe(12);
+    expect(unitsForPx(1, 296)).toBeCloseTo(240 / 296, 12);
+  });
+  it("a tap radius of 24 px covers at least 22 px at the narrowest and the widest screens", () => {
+    for (const w of [288, 296, 344, 380, 560]) {
+      const units = unitsForPx(24, w);
+      expect((units * w) / VIEW_SIZE).toBeCloseTo(24, 9);
+    }
+  });
+  it("falls back to 1:1 when the width is not known", () => {
+    expect(unitsForPx(11, 0)).toBe(11);
+    expect(unitsForPx(11, NaN)).toBe(11);
+  });
+});
+
+describe("shortLabel", () => {
+  it("keeps short names and cuts long ones with an ellipsis", () => {
+    expect(shortLabel("Q1TEST-7")).toBe("Q1TEST-7");
+    expect(shortLabel("A".repeat(MAX_LABEL_CHARS))).toBe("A".repeat(MAX_LABEL_CHARS));
+    expect(shortLabel("A".repeat(MAX_LABEL_CHARS + 1))).toBe(`${"A".repeat(MAX_LABEL_CHARS)}…`);
+    expect(shortLabel("Q1VERYLONGCALLSIGN-15")).toBe("Q1VERYLONGCA…");
+  });
+  it("counts characters, not UTF-16 units", () => {
+    expect(shortLabel("😀".repeat(12))).toBe("😀".repeat(12));
+    expect(shortLabel("😀".repeat(13))).toBe(`${"😀".repeat(12)}…`);
+  });
+});
+
+describe("tabStops (keyboard access with many stations)", () => {
+  const ids = Array.from({ length: 64 }, (_, i) => `Q1S${i}`);
+  it("gives every station a stop when there are few", () => {
+    expect(tabStops(ids.slice(0, 5), undefined)).toEqual(new Set(ids.slice(0, 5)));
+    expect(tabStops(ids.slice(0, 16), undefined).size).toBe(16);
+  });
+  it("at most 16 stops, the first (nearest) ones, with 64 stations", () => {
+    const s = tabStops(ids, undefined);
+    expect(s.size).toBe(16);
+    expect(s.has("Q1S0")).toBe(true);
+    expect(s.has("Q1S15")).toBe(true);
+    expect(s.has("Q1S16")).toBe(false);
+  });
+  it("the selected station always has a stop, one more than the limit", () => {
+    const s = tabStops(ids, "Q1S40");
+    expect(s.size).toBe(17);
+    expect(s.has("Q1S40")).toBe(true);
+    expect(tabStops(ids, "Q1S3").size).toBe(16);
+  });
+  it("a selection that is not on the radar is ignored", () => {
+    expect(tabStops(ids, "Q1GONE").size).toBe(16);
   });
 });

@@ -10,6 +10,7 @@
 import "./feed.css";
 import type { App, FeedItem } from "../store/state.ts";
 import { packetProblem } from "../aprs/types.ts";
+import { confirmDialog } from "./dialog.ts";
 import { h, setText } from "./dom.ts";
 import {
   buildFeedJson,
@@ -21,8 +22,10 @@ import {
   feedSource,
   isFiltering,
   kindLabel,
+  matchesFilter,
   selectItems,
   summarize,
+  tnc2Items,
   type FeedFilter,
 } from "./feedFormat.ts";
 import { fmtClock, fmtDb } from "./format.ts";
@@ -127,38 +130,58 @@ export function createFeedView(app: App): View {
     attrs: { type: "button" },
     on: {
       click: () => {
-        open.clear();
-        unseen = 0;
-        app.clearFeed();
+        const n = app.feed.length;
+        if (n === 0) return;
+        void confirmDialog({
+          title: "Clear the feed?",
+          body: [
+            `Clear all ${n} item${n === 1 ? "" : "s"}? Export first if you want to keep them.`,
+          ],
+          confirmLabel: "Clear",
+          danger: true,
+        }).then((ok) => {
+          if (!ok) return;
+          open.clear();
+          unseen = 0;
+          app.clearFeed();
+        });
       },
     },
   });
-  const jsonBtn = h("button", {
-    class: "btn",
-    text: "Export JSON",
-    attrs: { type: "button" },
-    on: {
-      click: () => {
-        const now = new Date();
-        download(exportFileName(now, "json"), "application/json", buildFeedJson(app.feed, now));
-      },
-    },
-  });
-  const txtBtn = h("button", {
-    class: "btn",
-    text: "Export TNC2",
-    attrs: { type: "button" },
-    on: {
-      click: () => {
-        download(
-          exportFileName(new Date(), "txt"),
-          "text/plain;charset=utf-8",
-          buildTnc2Log(app.feed),
-        );
-      },
-    },
-  });
-  const count = h("p", { class: "feed-count muted", attrs: { "aria-live": "polite" } });
+
+  const includeTx = h("input", { id: "feed-tx", attrs: { type: "checkbox" } });
+  const exportButton = (onClick: () => void): HTMLButtonElement =>
+    h("button", { class: "btn", attrs: { type: "button" }, on: { click: onClick } });
+  /** What is written to a file: everything kept, or only what matches the filter. */
+  const exportItems = (onlyFiltered: boolean): readonly FeedItem[] =>
+    onlyFiltered ? app.feed.filter((i) => matchesFilter(i, filter)) : app.feed;
+  const exportJson = (onlyFiltered: boolean): void => {
+    const now = new Date();
+    download(
+      exportFileName(now, "json"),
+      "application/json",
+      buildFeedJson(exportItems(onlyFiltered), now),
+    );
+  };
+  const exportTnc2 = (onlyFiltered: boolean): void => {
+    download(
+      exportFileName(new Date(), "txt"),
+      "text/plain;charset=utf-8",
+      buildTnc2Log(exportItems(onlyFiltered), { includeTx: includeTx.checked }),
+    );
+  };
+  const allJsonBtn = exportButton(() => exportJson(false));
+  const allTxtBtn = exportButton(() => exportTnc2(false));
+  const filteredJsonBtn = exportButton(() => exportJson(true));
+  const filteredTxtBtn = exportButton(() => exportTnc2(true));
+  const filteredRow = h(
+    "div",
+    { class: "row feed-actions", hidden: true },
+    filteredJsonBtn,
+    filteredTxtBtn,
+  );
+  // Not a live region: it changes with every packet, and a screen reader would read each change.
+  const count = h("p", { class: "feed-count muted" });
   const empty = h("p", { class: "card muted feed-empty" });
   const list = h("ul", { class: "list feed-list" });
   const newBtn = h("button", {
@@ -188,7 +211,18 @@ export function createFeedView(app: App): View {
         field("Type", "feed-cat", catSel),
         field("Source callsign", "feed-src", srcInput, true),
       ),
-      h("div", { class: "row feed-actions" }, clearBtn, jsonBtn, txtBtn),
+      h("div", { class: "row feed-actions" }, allJsonBtn, allTxtBtn),
+      filteredRow,
+      h(
+        "div",
+        { class: "feed-tx-opt" },
+        includeTx,
+        h("label", {
+          text: "Include own transmissions in TNC2 files (after a “# tx” line)",
+          attrs: { for: "feed-tx" },
+        }),
+      ),
+      h("div", { class: "row feed-actions" }, clearBtn),
     ),
     count,
     empty,
@@ -266,6 +300,7 @@ export function createFeedView(app: App): View {
   dirSel.addEventListener("change", onFilterChange);
   catSel.addEventListener("change", onFilterChange);
   srcInput.addEventListener("input", onFilterChange);
+  includeTx.addEventListener("change", render);
 
   window.addEventListener(
     "scroll",
@@ -320,7 +355,9 @@ export function createFeedView(app: App): View {
     const limit = app.prefs.get("logLimit");
     let line = `${app.feed.length} of ${limit}`;
     if (isFiltering(filter)) line += ` · ${matched} match`;
-    if (matched > rows.length) line += ` · Showing latest ${rows.length}`;
+    if (matched > rows.length) {
+      line += ` · Showing latest ${rows.length}. Older items are only in the export.`;
+    }
     setText(count, line);
     const hasRows = rows.length > 0;
     empty.hidden = hasRows;
@@ -335,8 +372,20 @@ export function createFeedView(app: App): View {
       );
     }
     clearBtn.disabled = app.feed.length === 0;
-    jsonBtn.disabled = app.feed.length === 0;
-    txtBtn.disabled = app.feed.length === 0;
+    const total = app.feed.length;
+    const withTx = includeTx.checked;
+    setText(allJsonBtn, `Export all ${total} as JSON`);
+    setText(allTxtBtn, `Export all ${total} as TNC2`);
+    allJsonBtn.disabled = total === 0;
+    allTxtBtn.disabled = tnc2Items(app.feed, { includeTx: withTx }).length === 0;
+    const filtering = isFiltering(filter);
+    filteredRow.hidden = !filtering;
+    if (filtering) {
+      setText(filteredJsonBtn, `Export filtered ${matched} as JSON`);
+      setText(filteredTxtBtn, `Export filtered ${matched} as TNC2`);
+      filteredJsonBtn.disabled = matched === 0;
+      filteredTxtBtn.disabled = tnc2Items(exportItems(true), { includeTx: withTx }).length === 0;
+    }
 
     // Scrolling: follow only from the bottom, and never while a row is open.
     if (filterChanged) {

@@ -22,6 +22,7 @@ import {
   packetRows,
   selectItems,
   summarize,
+  tnc2Items,
   weatherSummary,
   type FeedFilter,
 } from "../src/ui/feedFormat.ts";
@@ -161,6 +162,30 @@ describe("summaries", () => {
   it("weatherSummary copes with an empty report", () => {
     expect(weatherSummary({})).toBe("no values");
   });
+  it("weatherSummary: every value with its unit (rain is an amount over 1 h, not a rate)", () => {
+    expect(
+      weatherSummary({
+        tempC: 12.34,
+        humidity: 65.2,
+        pressureHpa: 1013.25,
+        windDirDeg: 180,
+        windSpeedMs: 3.2,
+        gustMs: 5,
+        rain1hMm: 0.3,
+      }),
+    ).toBe("12.3 °C, 65 %, 1013.3 hPa, wind 180° 3.2 m/s (gust 5 m/s), rain 0.3 mm (1 h)");
+    expect(weatherSummary({ gustMs: 4.5 })).toBe("gust 4.5 m/s");
+    expect(weatherSummary({ windSpeedMs: 2 })).toBe("wind 2 m/s");
+    expect(weatherSummary({ windDirDeg: 90 })).toBe("wind 90°");
+    expect(weatherSummary({ rain1hMm: 0 })).toBe("rain 0 mm (1 h)");
+  });
+  it("weatherSummary: no wind says calm and leaves out the direction (000 is not a north wind)", () => {
+    expect(weatherSummary({ windDirDeg: 0, windSpeedMs: 0 })).toBe("wind calm");
+    expect(weatherSummary({ windDirDeg: 0, windSpeedMs: 0, gustMs: 1.5 })).toBe(
+      "wind calm (gust 1.5 m/s)",
+    );
+    expect(weatherSummary({ windDirDeg: 0, windSpeedMs: 2 })).toBe("wind 0° 2 m/s");
+  });
   it("telemetry shows the sequence and channels", () => {
     expect(summarize(item(SAMPLES.telemetry!).parsed)).toBe("#5: 199, 0, 255, 73, 123");
   });
@@ -207,6 +232,39 @@ describe("detail rows", () => {
       ]),
     ).toBe("WIDE1-1*,WIDE2-1,qAR,Q1X");
   });
+  it("fmtPath: the star goes on the last used entry, and never on a q construct", () => {
+    // WIDE1-1 and WIDE2-1 were both used: only the last carries the star.
+    expect(
+      fmtPath([
+        { call: "WIDE1-1", used: true },
+        { call: "WIDE2-1", used: true },
+        { call: "WIDE3-1", used: false },
+      ]),
+    ).toBe("WIDE1-1,WIDE2-1*,WIDE3-1");
+    // A used q construct after the last digipeater does not take the star.
+    expect(
+      fmtPath([
+        { call: "TCPIP", used: true },
+        { call: "qAR", used: true, qConstruct: true },
+        { call: "Q1IGATE", used: true },
+      ]),
+    ).toBe("TCPIP,qAR,Q1IGATE*");
+    expect(
+      fmtPath([
+        { call: "WIDE1-1", used: true },
+        { call: "qAR", used: true, qConstruct: true },
+      ]),
+    ).toBe("WIDE1-1*,qAR");
+    // Only q constructs: no star at all.
+    expect(fmtPath([{ call: "qAC", used: false, qConstruct: true }])).toBe("qAC");
+    expect(fmtPath([{ call: "qAC", used: true, qConstruct: true }])).toBe("qAC");
+  });
+  it("fmtPath of a parsed packet with q constructs", () => {
+    const p = parseAprs("Q1AAA>APRS,TCPIP*,qAC,Q1SRV:>hi");
+    expect(fmtPath(p.tnc2!.path)).toBe("TCPIP*,qAC,Q1SRV");
+    const q = parseAprs("Q1AAA>APRS,WIDE1-1,WIDE2-1*,qAR,Q1RX:>hi");
+    expect(fmtPath(q.tnc2!.path)).toBe("WIDE1-1,WIDE2-1*,qAR,Q1RX");
+  });
   it("message: addressee, text and number", () => {
     const rows = detailRows(item(SAMPLES.message!));
     expect(get(rows, "To")).toBe("Q1BBB-7");
@@ -218,7 +276,46 @@ describe("detail rows", () => {
     expect(get(rows, "Temperature")).toBe("25 °C");
     expect(get(rows, "Humidity")).toBe("50 %");
     expect(get(rows, "Pressure")).toBe("990 hPa");
-    expect(get(rows, "Wind direction")).toBe("220 °");
+    expect(get(rows, "Wind direction")).toBe("220°");
+  });
+  it("weather detail rows: unit and digits of each value", () => {
+    const weather = {
+      windDirDeg: 220.4,
+      windSpeedMs: 3.24,
+      gustMs: 5.06,
+      tempC: -2.46,
+      rain1hMm: 0.31,
+      rain24hMm: 12.34,
+      rainMidnightMm: 7,
+      humidity: 64.6,
+      pressureHpa: 1013.26,
+      luminosityWm2: 812.4,
+      snowMm: 25.4,
+      extra: "RSW",
+    };
+    const p = { tnc2: null, data: { type: "weather", weather } } as unknown as AprsPacket;
+    const rows = packetRows(p);
+    expect(get(rows, "Wind direction")).toBe("220°");
+    expect(get(rows, "Wind speed")).toBe("3.2 m/s");
+    expect(get(rows, "Gust")).toBe("5.1 m/s");
+    expect(get(rows, "Temperature")).toBe("-2.5 °C");
+    expect(get(rows, "Rain, last hour")).toBe("0.3 mm");
+    expect(get(rows, "Rain, 24 hours")).toBe("12.3 mm");
+    expect(get(rows, "Rain, since midnight")).toBe("7 mm");
+    expect(get(rows, "Humidity")).toBe("65 %");
+    expect(get(rows, "Pressure")).toBe("1013.3 hPa");
+    expect(get(rows, "Luminosity")).toBe("812 W/m²");
+    expect(get(rows, "Snow, 24 hours")).toBe("25.4 mm");
+    expect(get(rows, "Weather unit")).toBe("RSW");
+  });
+  it("weather detail rows: no wind has no direction row", () => {
+    const calm = {
+      tnc2: null,
+      data: { type: "weather", weather: { windDirDeg: 0, windSpeedMs: 0 } },
+    } as unknown as AprsPacket;
+    const rows = packetRows(calm);
+    expect(get(rows, "Wind direction")).toBeUndefined();
+    expect(get(rows, "Wind speed")).toBe("0 m/s");
   });
   it("telemetry and telemetry definitions", () => {
     expect(get(detailRows(item(SAMPLES.telemetry!)), "Digital")).toBe("01101001");
@@ -322,10 +419,30 @@ describe("export", () => {
   });
   it("the TNC2 log is one packet per line, `<0xHH>` untouched", () => {
     const a = item("Q1AAA>APRS::Q1BBB    :a: <0xE3><0x81><0x82>{7");
-    const b = item(SAMPLES.position!, { kind: "tx", dry: true });
+    const b = item(SAMPLES.position!);
     expect(buildTnc2Log([a, b])).toBe(`${a.msg.tnc2}\n${b.msg.tnc2}\n`);
     expect(buildTnc2Log([a])).toContain("<0xE3><0x81><0x82>");
     expect(buildTnc2Log([])).toBe("");
+  });
+  // The log has no direction and no time. A line of our own beacon (sent, or only a dry run that
+  // was never on the air) would look like a received packet in another tool, so by default only
+  // what was received (rx) is written. Own transmissions are opt-in and labelled.
+  it("the TNC2 log has only received packets by default (no tx, dry run or not)", () => {
+    const rx = item(SAMPLES.position!);
+    const tx = item(SAMPLES.status!, { kind: "tx" });
+    const dry = item(SAMPLES.message!, { kind: "tx", dry: true });
+    expect(buildTnc2Log([rx, tx, dry])).toBe(`${rx.msg.tnc2}\n`);
+    expect(buildTnc2Log([tx, dry])).toBe("");
+    expect(tnc2Items([rx, tx, dry])).toEqual([rx]);
+  });
+  it("the TNC2 log can include own transmissions, each after a comment line", () => {
+    const rx = item(SAMPLES.position!);
+    const tx = item(SAMPLES.status!, { kind: "tx" });
+    const dry = item(SAMPLES.message!, { kind: "tx", dry: true });
+    expect(buildTnc2Log([rx, tx, dry], { includeTx: true })).toBe(
+      [rx.msg.tnc2, "# tx", tx.msg.tnc2, "# tx (dry run)", dry.msg.tnc2, ""].join("\n"),
+    );
+    expect(buildTnc2Log([tx], { includeTx: false })).toBe("");
   });
   it("the TNC2 log never has a line break inside a packet", () => {
     const a = item("Q1AAA>APRS:>one\r\ntwo");
@@ -353,12 +470,24 @@ describe("export", () => {
       dir: "rx",
       at: "2026-11-18T01:02:03.000Z",
       type: "position",
-      tnc2: SAMPLES.position,
-      lvl_db: -20.5,
-      clip: false,
+      msg: { tnc2: SAMPLES.position, lvl_db: -20.5, clip: false },
     });
-    expect(j.items[0]).not.toHaveProperty("t");
-    expect(j.items[1]).toMatchObject({ dir: "tx", dry: true, type: "status" });
+    expect(j.items[0]!.msg).not.toHaveProperty("t");
+    expect(j.items[1]).toMatchObject({ dir: "tx", type: "status", msg: { dry: true } });
+  });
+  it("JSON: a key the device adds can never overwrite the app's seq, dir, at or type", () => {
+    const a = item(SAMPLES.position!, { at: Date.UTC(2026, 10, 18, 1, 2, 3) });
+    // A future firmware might send these keys.
+    Object.assign(a.msg, { seq: 99999, dir: "elsewhere", at: "never", type: "bogus" });
+    const j = JSON.parse(buildFeedJson([a], new Date(0))) as {
+      items: { seq: number; dir: string; at: string; type: string; msg: Record<string, unknown> }[];
+    };
+    const out = j.items[0]!;
+    expect(out.seq).toBe(a.seq);
+    expect(out.dir).toBe("rx");
+    expect(out.at).toBe("2026-11-18T01:02:03.000Z");
+    expect(out.type).toBe("position");
+    expect(out.msg).toMatchObject({ seq: 99999, dir: "elsewhere", at: "never", type: "bogus" });
   });
   it("JSON of an empty feed", () => {
     expect(JSON.parse(buildFeedJson([], new Date(0)))).toMatchObject({ count: 0, items: [] });

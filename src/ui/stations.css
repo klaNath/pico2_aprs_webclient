@@ -38,13 +38,16 @@
 
 .st-top {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 8px;
+  gap: 2px 8px;
 }
 
+/* A callsign never breaks at its hyphen; the badge moves to the next line instead. */
 .st-call {
   font-weight: 700;
   font-size: 1rem;
+  white-space: nowrap;
 }
 
 .st-own {
@@ -55,6 +58,7 @@
   border-radius: 999px;
   background: var(--accent);
   color: var(--accent-text);
+  white-space: nowrap;
 }
 
 .st-age {
@@ -85,4 +89,35 @@
 
 .st-detail .kv {
   margin: 8px 0 0;
+}
+
+/* One row for the count and the "order paused" notice. Its height is fixed so that the notice
+   appearing never moves the list under a finger. */
+.st-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+}
+
+.st-status .st-summary {
+  flex: 1 1 auto;
+}
+
+.st-paused {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: var(--warn);
+}
+
+.st-paused .btn {
+  flex: none;
+  min-height: 36px;
+  padding: 0 10px;
+}
+
+.st-paused[hidden] {
+  display: none;
 }

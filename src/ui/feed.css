@@ -17,13 +17,29 @@
 
 .feed-actions {
   margin-top: 12px;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
 }
 
 .feed-actions .btn {
   flex: 1 1 auto;
   padding: 0 8px;
   font-size: 0.9rem;
+}
+
+.feed-tx-opt {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.feed-tx-opt input {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin: 0;
 }
 
 .feed-count {
@@ -78,10 +94,22 @@
   border: 1px solid var(--border);
 }
 
+/* --ok on --ok-bg is 4.37:1 in the light theme; this green reaches 5.7:1 (tests/radarContrast.test.ts). */
 .feed-dir-rx {
+  --feed-rx: #166a30;
   background: var(--ok-bg);
-  color: var(--ok);
-  border-color: var(--ok);
+  color: var(--feed-rx);
+  border-color: var(--feed-rx);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .feed-dir-rx {
+    --feed-rx: var(--ok);
+  }
+}
+
+:root[data-theme="dark"] .feed-dir-rx {
+  --feed-rx: var(--ok);
 }
 
 .feed-dir-tx {

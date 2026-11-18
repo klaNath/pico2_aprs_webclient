@@ -14,6 +14,7 @@ import { symbolInfo, symbolName, type SymbolCategory } from "../aprs/symbols.ts"
 import { packetPosition, type AprsSymbol } from "../aprs/types.ts";
 import type { FeedItem, StationRow } from "../store/state.ts";
 import { fmtAge, fmtDb, fmtDistance } from "./format.ts";
+import { AT_POSITION_M } from "./radarGeometry.ts";
 
 export type SortKey = "recent" | "distance" | "call" | "count";
 
@@ -38,8 +39,13 @@ export interface StationItem {
   category: SymbolCategory;
   /** Great-circle distance from this tracker, in meters. Needs both positions; not for `own`. */
   distanceM?: number;
-  /** Bearing from this tracker, degrees [0, 360). */
+  /** Bearing from this tracker, degrees [0, 360). Not set when the station is at your position. */
   bearing?: number;
+}
+
+/** True for a station at (almost exactly) the position of this tracker: it has no bearing. */
+export function isAtPosition(item: StationItem): boolean {
+  return item.distanceM !== undefined && item.distanceM < AT_POSITION_M;
 }
 
 /**
@@ -84,7 +90,8 @@ export function buildItems(rows: Iterable<StationRow>, me: LatLon | undefined): 
     if (symbol) item.symbol = symbol;
     if (!r.own && me && pos) {
       item.distanceM = distanceM(me, pos);
-      item.bearing = bearingDeg(me, pos);
+      // The bearing of two identical points is meaningless (it would read "north").
+      if (!isAtPosition(item)) item.bearing = bearingDeg(me, pos);
     }
     out.push(item);
   }
@@ -143,7 +150,9 @@ export function bearingText(bearing: number | undefined): string {
 
 export interface RowText {
   call: string;
+  /** "1.2 km", "At your position", "No position" (never heard a position) or "—". */
   distance: string;
+  /** "SW (225°)". Empty when it has no meaning (this tracker, at your position, no position). */
   bearing: string;
   age: string;
   count: string;
@@ -153,10 +162,26 @@ export interface RowText {
 
 /** Everything a list row or a detail panel shows, as text. */
 export function rowText(item: StationItem, now: number): RowText {
+  let distance: string;
+  let bearing: string;
+  if (item.own) {
+    distance = NO_VALUE;
+    bearing = "";
+  } else if (isAtPosition(item)) {
+    distance = "At your position";
+    bearing = "";
+  } else if (item.distanceM !== undefined) {
+    distance = fmtDistance(item.distanceM);
+    bearing = bearingText(item.bearing);
+  } else {
+    // No distance: the station has no position, or this tracker has no GPS fix yet.
+    distance = item.pos === undefined ? "No position" : NO_VALUE;
+    bearing = "";
+  }
   return {
     call: item.src,
-    distance: item.own ? NO_VALUE : fmtDistance(item.distanceM),
-    bearing: item.own ? NO_VALUE : bearingText(item.bearing),
+    distance,
+    bearing,
     age: ageText(item.lastAt, now),
     count: `${item.count}`,
     level: fmtDb(item.lvlDb),
@@ -164,11 +189,26 @@ export function rowText(item: StationItem, now: number): RowText {
   };
 }
 
-/** Short spoken/ARIA description: "Q1AAA-9, 1.2 km, SW (225°)". */
-export function ariaText(item: StationItem): string {
-  if (item.own) return `${item.src}, this tracker`;
-  if (item.distanceM === undefined) return `${item.src}, position unknown`;
-  return `${item.src}, ${fmtDistance(item.distanceM)}, ${bearingText(item.bearing)}`;
+/**
+ * Spoken/ARIA description: "Q1AAA-9, 1.2 km, SW (225°), Car". With `now` it also says how long
+ * ago the station was heard, how many packets, and the level, because this text replaces what
+ * the row shows (`aria-label` hides the row's own contents from a screen reader).
+ */
+export function ariaText(item: StationItem, now?: number): string {
+  const parts: string[] = [item.src];
+  if (item.own) parts.push("this tracker");
+  else if (isAtPosition(item)) parts.push("at your position");
+  else if (item.distanceM !== undefined) {
+    parts.push(fmtDistance(item.distanceM), bearingText(item.bearing));
+  } else parts.push(item.pos === undefined ? "no position" : "distance unknown");
+  if (item.symbolName !== NO_VALUE) parts.push(item.symbolName);
+  if (now !== undefined) {
+    const age = ageText(item.lastAt, now);
+    if (age !== NO_VALUE) parts.push(`heard ${age}`);
+    parts.push(`${item.count} packet${item.count === 1 ? "" : "s"}`);
+    if (item.lvlDb !== undefined) parts.push(`level ${fmtDb(item.lvlDb)}`);
+  }
+  return parts.join(", ");
 }
 
 export interface LatestPacket {
@@ -218,7 +258,10 @@ export function detailRows(
     { label: "Callsign", value: item.own ? `${t.call} (this tracker)` : t.call },
   ];
   if (!item.own) {
-    rows.push({ label: "Distance", value: t.distance }, { label: "Bearing", value: t.bearing });
+    rows.push(
+      { label: "Distance", value: t.distance },
+      { label: "Bearing", value: t.bearing === "" ? NO_VALUE : t.bearing },
+    );
   }
   rows.push(
     { label: "Last heard", value: t.age },

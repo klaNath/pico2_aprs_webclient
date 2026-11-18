@@ -1,6 +1,10 @@
 // The Stations tab: every station the tracker has heard, with distance and bearing from this
 // tracker, sorted and filtered. Tapping a row opens its details. The row elements are created
 // once per station and updated in place (render() runs every second, so ages stay fresh).
+//
+// The order is held (see stationOrder.ts) while a detail is open, a row has keyboard focus, or a
+// pointer is down (and for a moment after), so a row never moves under the user's finger. Text
+// keeps updating; the held changes are applied once, when the hold ends or on "Update order".
 
 import type { App } from "../store/state.ts";
 import "./stations.css";
@@ -18,6 +22,7 @@ import {
   type SortKey,
   type StationItem,
 } from "./stationList.ts";
+import { isOrderHeld, orderPending, POINTER_RELEASE_HOLD_MS } from "./stationOrder.ts";
 import type { View } from "./view.ts";
 
 interface RowEls {
@@ -41,6 +46,10 @@ export function createStationsView(app: App): View {
   /** The station whose details are open (kept across renders). */
   let selected: string | undefined;
   const rows = new Map<string, RowEls>();
+  let pointerDown = false;
+  let focusByPointer = false;
+  let pointerReleasedAt: number | undefined;
+  let releaseTimer: ReturnType<typeof setTimeout> | undefined;
 
   const filterInput = h("input", {
     id: "st-filter",
@@ -55,7 +64,7 @@ export function createStationsView(app: App): View {
     on: {
       input: () => {
         filter = filterInput.value;
-        render();
+        apply(true);
       },
     },
   });
@@ -66,7 +75,7 @@ export function createStationsView(app: App): View {
       on: {
         change: () => {
           sort = sortSelect.value as SortKey;
-          render();
+          apply(true);
         },
       },
     },
@@ -92,9 +101,23 @@ export function createStationsView(app: App): View {
   );
   const noFix = h("div", { class: "card note", hidden: true, attrs: { role: "status" } });
   const summary = h("p", { class: "muted st-summary" });
+  const paused = h(
+    "span",
+    { class: "st-paused", hidden: true, attrs: { role: "status" } },
+    h("span", { text: "New activity — order paused" }),
+    h("button", {
+      class: "btn",
+      text: "Update order",
+      attrs: { type: "button" },
+      on: { click: () => apply(true) },
+    }),
+  );
+  // One row for both, with a fixed minimum height: the pause notice appearing must not push the
+  // list down (that would move the row under a finger that is already on it).
+  const statusRow = h("div", { class: "st-status" }, summary, paused);
   const empty = h("p", { class: "muted", hidden: true });
   const list = h("ul", { class: "list st-list" });
-  const el = h("section", { class: "view" }, controls, noFix, summary, empty, list);
+  const el = h("section", { class: "view" }, controls, noFix, statusRow, empty, list);
 
   function makeRow(src: string): RowEls {
     const call = h("span", { class: "st-call mono", text: src });
@@ -113,7 +136,8 @@ export function createStationsView(app: App): View {
         on: {
           click: () => {
             selected = selected === src ? undefined : src;
-            render();
+            // Not forced: opening a detail holds the order, closing it waits for the pointer hold.
+            apply(false);
           },
         },
       },
@@ -123,7 +147,7 @@ export function createStationsView(app: App): View {
     );
     const detailList = createDetailList();
     const detail = h("div", { class: "st-detail", hidden: true }, detailList.el);
-    const li = h("li", { class: "list-item" }, main, detail);
+    const li = h("li", { class: "list-item", attrs: { "data-src": src } }, main, detail);
     return { li, main, call, own, age, dist, brg, count, lvl, sym, detail, detailList };
   }
 
@@ -132,13 +156,13 @@ export function createStationsView(app: App): View {
     r.own.hidden = !item.own;
     setText(r.age, t.age);
     r.dist.hidden = item.own;
-    r.brg.hidden = item.own;
+    r.brg.hidden = item.own || t.bearing === "";
     setText(r.dist, t.distance);
     setText(r.brg, t.bearing);
     setText(r.count, `×${t.count}`);
     setText(r.lvl, t.level);
     setText(r.sym, t.symbol);
-    const label = ariaText(item);
+    const label = ariaText(item, now);
     if (r.main.getAttribute("aria-label") !== label) r.main.setAttribute("aria-label", label);
     const open = selected === item.src;
     r.main.setAttribute("aria-expanded", String(open));
@@ -149,7 +173,21 @@ export function createStationsView(app: App): View {
     }
   }
 
-  function render(): void {
+  /**
+   * True while a row inside the list has focus. A tap also focuses the button it hit, and that
+   * focus lingers after the finger is gone; it must not hold the order for ever, so a focus that
+   * came from a pointer does not count (until a key is pressed in the list).
+   */
+  function focusInRow(): boolean {
+    const a = document.activeElement;
+    return a instanceof HTMLElement && list.contains(a) && !focusByPointer;
+  }
+
+  /**
+   * `force`: the user just changed something (opened or closed a detail, filter, sort, "Update
+   * order"), so the list is brought up to date now. Otherwise it is held while `isOrderHeld`.
+   */
+  function apply(force: boolean): void {
     const now = Date.now();
     const me = app.ownPosition();
     const all = buildItems(app.stations.values(), me);
@@ -182,14 +220,46 @@ export function createStationsView(app: App): View {
           : "",
     );
 
+    if (selected !== undefined && !app.stations.has(selected)) selected = undefined;
+    const wanted = shown.map((i) => i.src);
+    const held =
+      !force &&
+      isOrderHeld({
+        detailOpen: selected !== undefined,
+        focusInRow: focusInRow(),
+        pointerDown,
+        pointerReleasedAt,
+        now,
+      });
+
+    if (held) {
+      // Only what is already on screen is updated, in place. Stations that were never shown
+      // (new ones) and a changed order wait for the end of the hold.
+      for (const [src, r] of rows) {
+        if (!app.stations.has(src)) {
+          r.li.remove();
+          rows.delete(src);
+        }
+      }
+      for (const item of shown) {
+        const r = rows.get(item.src);
+        if (r) updateRow(r, item, now);
+      }
+      const onScreen = Array.from(list.children, (li) => (li as HTMLElement).dataset.src ?? "");
+      paused.hidden = !orderPending(onScreen, wanted);
+      return;
+    }
+
+    paused.hidden = true;
     // Drop rows of stations that are gone or filtered out, then put the rest in order.
-    const wanted = new Set(shown.map((i) => i.src));
+    const keep = new Set(wanted);
     for (const [src, r] of rows) {
-      if (wanted.has(src)) continue;
+      if (keep.has(src)) continue;
       r.li.remove();
       if (!app.stations.has(src)) rows.delete(src);
     }
-    if (selected !== undefined && !app.stations.has(selected)) selected = undefined;
+    const active = document.activeElement;
+    const hadFocus = active instanceof HTMLElement && list.contains(active) ? active : undefined;
     let ref: Element | null = list.firstElementChild;
     for (const item of shown) {
       let r = rows.get(item.src);
@@ -201,7 +271,41 @@ export function createStationsView(app: App): View {
       if (ref === r.li) ref = ref.nextElementSibling;
       else list.insertBefore(r.li, ref);
     }
+    // Moving an element in the DOM drops its focus. Give it back.
+    if (hadFocus && document.activeElement !== hadFocus && hadFocus.isConnected) {
+      hadFocus.focus({ preventScroll: true });
+    }
   }
 
-  return { el, render };
+  // ---- pointer tracking (for the order hold) ------------------------------------------------
+  list.addEventListener("pointerdown", () => {
+    pointerDown = true;
+    focusByPointer = true;
+    pointerReleasedAt = undefined;
+    clearTimeout(releaseTimer);
+  });
+  function released(): void {
+    if (!pointerDown) return;
+    pointerDown = false;
+    pointerReleasedAt = Date.now();
+    clearTimeout(releaseTimer);
+    // Sort once the click has had its chance (render() also runs once a second).
+    releaseTimer = setTimeout(() => {
+      if (el.isConnected) apply(false);
+    }, POINTER_RELEASE_HOLD_MS + 20);
+  }
+  window.addEventListener("pointerup", released);
+  window.addEventListener("pointercancel", released);
+  list.addEventListener("keydown", () => {
+    focusByPointer = false;
+  });
+  // Leaving the list ends the hold at once.
+  list.addEventListener("focusout", () => {
+    setTimeout(() => {
+      if (!list.contains(document.activeElement)) focusByPointer = false;
+      if (el.isConnected) apply(false);
+    }, 0);
+  });
+
+  return { el, render: () => apply(false) };
 }

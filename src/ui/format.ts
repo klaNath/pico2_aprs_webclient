@@ -13,17 +13,25 @@ export function fmtAge(sec: number | undefined): string {
   return `${Math.round(sec / 86400)} d`;
 }
 
-/** Meters -> "850 m" / "12.3 km" / "245 km". */
+/**
+ * Meters -> "850 m" / "12.3 km" / "245 km". The unit changes where the rounded number would
+ * reach the next one: 999.6 m is "1.0 km" (not "1000 m") and 99 999.96 m is "100 km" (not
+ * "100.0 km").
+ */
 export function fmtDistance(m: number | undefined): string {
   if (m === undefined || !Number.isFinite(m)) return NO_VALUE;
-  if (m < 1000) return `${Math.round(m)} m`;
-  if (m < 100_000) return `${(m / 1000).toFixed(1)} km`;
+  const meters = Math.round(m);
+  if (meters < 1000) return `${meters} m`;
+  const km1 = Math.round(m / 100) / 10;
+  if (km1 < 100) return `${km1.toFixed(1)} km`;
   return `${Math.round(m / 1000)} km`;
 }
 
+/** "-31.3 dB". A value that rounds to zero is "0.0 dB", never "-0.0 dB". */
 export function fmtDb(db: number | undefined): string {
   if (db === undefined || !Number.isFinite(db)) return NO_VALUE;
-  return `${db.toFixed(1)} dB`;
+  const s = db.toFixed(1);
+  return `${s === "-0.0" ? "0.0" : s} dB`;
 }
 
 /** "12:34:56" local time for a Date.now() value. */

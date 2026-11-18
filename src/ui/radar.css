@@ -40,7 +40,10 @@
   padding: 12px;
 }
 
+/* --u is how many viewBox units one screen pixel covers (set from radarView.ts, 240 / width).
+   Text is sized as N * var(--u): N is its size in screen pixels, whatever the width. */
 .radar {
+  --u: 0.75;
   display: block;
   width: 100%;
   max-width: 560px;
@@ -77,23 +80,26 @@
 
 .radar-text {
   fill: var(--muted);
-  font-size: 7px;
+  font-size: calc(11px * var(--u));
   font-variant-numeric: tabular-nums;
 }
 
 .radar-compass {
   fill: var(--text);
-  font-size: 10px;
+  font-size: calc(13px * var(--u));
   font-weight: 700;
   text-anchor: middle;
   dominant-baseline: central;
 }
 
+/* A halo in the background color keeps the text readable where a ring, an axis or a dot is under it. */
 .radar-ring-label {
   paint-order: stroke;
   stroke: var(--bg);
-  stroke-width: 2.5px;
+  stroke-opacity: 0.8;
+  stroke-width: calc(4px * var(--u));
   stroke-linejoin: round;
+  pointer-events: none;
 }
 
 .radar-own-ring {
@@ -109,11 +115,6 @@
 .radar-st {
   cursor: pointer;
   outline: none;
-}
-
-.radar-hit {
-  fill: transparent;
-  stroke: none;
 }
 
 .radar-sel {
@@ -173,18 +174,20 @@
   color: var(--radar-other);
 }
 
+/* 0.85 keeps the cross at 3:1 or more against the card in both themes (tests/radarContrast.test.ts). */
 .radar-st.out .radar-mark.cat-other {
   stroke: var(--radar-other);
-  stroke-opacity: 0.6;
+  stroke-opacity: 0.85;
 }
 
 .radar-lbl {
   display: none;
   fill: var(--text);
-  font-size: 7.5px;
+  font-size: calc(11px * var(--u));
+  dominant-baseline: central;
   paint-order: stroke;
   stroke: var(--bg);
-  stroke-width: 2.5px;
+  stroke-width: calc(4px * var(--u));
   stroke-linejoin: round;
   pointer-events: none;
 }
