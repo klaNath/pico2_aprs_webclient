@@ -54,7 +54,7 @@ export function reconnectText(
 }
 
 export const PAIRING_HINT =
-  "Your phone may ask you to pair. If it does, enter the 6-digit passkey shown on the tracker's LCD.";
+  "The first time, your phone may ask you to pair. On Android this can appear only as a notification (“Pairing request”): open it, then enter the 6-digit passkey shown on the tracker's LCD. Do it soon, because the tracker drops a connection that stays unpaired.";
 
 export function createConnectView(app: App): View {
   const heading = h("h2");
@@ -178,7 +178,7 @@ export function createConnectView(app: App): View {
         st === "connecting"
           ? "Connecting…"
           : st === "handshaking"
-            ? "Connected. Reading the tracker's state… (a pairing prompt can still appear now)"
+            ? "Connected. Reading the tracker's state… If this takes a while, look for a “Pairing request” in your phone's notifications."
             : "",
       );
       const msg = connectMessage({

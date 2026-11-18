@@ -120,7 +120,7 @@
 2. 初回の接続の失敗(GATT 133、supervision timeout)が再現するか。結合を両側で消してから数回試す
 3. 間違ったパスキー、ダイアログの取り消し、ペアリングを OS 側で削除した後の挙動(Issue #5 のテスト計画)
 4. 接続後の rx の連続受信、`dropped`、Settings の書き込み(Q1 のテスト用コールサインに替えられる環境で)、schema の読み込み時間
-5. `connectView.ts` の案内文(`PAIRING_HINT`)に「通知の『ペア設定リクエスト』をタップする」を足す(Android のとき)。戻るボタンと pull-to-refresh の抑止(作業 4 の未確認)も確かめる
+5. 戻るボタンと pull-to-refresh の抑止(作業 4 の未確認)を確かめる。`PAIRING_HINT` と接続待ちの表示には「通知の『Pairing request』を開く」を足した(Android 実機で表示を確認済み。「Do it soon, because the tracker drops a connection that stays unpaired」は、ファームウェア側の 60 秒の切断が実機では未確認のままの記述)
 6. 仕様側: Issue #5 にファームウェア側の返信がある(`docs/ble-protocol.md` 0.4 §4、ブランチ `ble-issues-1-6`)。60 秒以内に認証されないと切られ、パスキー待ちの目安になる。アプリの `hello` の再送(3 秒 × 5 回)は、リンクが切れるか 60 秒たつまで続ける案。`npm run spec:update` でピンを進めて確認する(まだ進めていない)
 
 ### 作業 6(PWA と Pages)

@@ -109,8 +109,10 @@ describe("connect messages", () => {
     expect(connectMessage({ ...base, notice: "n", disconnectReason: "r" })).toBe("n");
     expect(connectMessage(base)).toBeUndefined();
   });
-  it("says pairing may happen (U3 is unconfirmed)", () => {
+  it("says pairing may happen, and that on Android it can be only a notification (U3)", () => {
     expect(PAIRING_HINT).toContain("may ask you to pair");
+    expect(PAIRING_HINT).toContain("notification");
+    expect(PAIRING_HINT).toContain("passkey");
   });
   it("tells a missing browser from a page that is not HTTPS", () => {
     expect(webBluetoothHelp(true, true)).toBeUndefined();
