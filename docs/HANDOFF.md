@@ -89,7 +89,7 @@
 
 この環境の Chromium は `http://127.0.0.1` のページを読み込めない。`VITE_ENABLE_DEBUG=1 npx vite build --base=./ --outDir <dir> --emptyOutDir` で作り、`file://` で開く。DevTools プロトコルでスクリーンショットとコンソールを取る(スクリプトはスクラッチにあり、リポジトリにはない。必要なら `tools/` に入れる)。
 
-## 作業 5 の結果(実装済み。実機では未確認)
+## 作業 5 の結果(実装済み。実機で一部確認済み)
 
 - `src/transport/webBluetooth.ts`: `WebBluetoothTransport`(NUS。`connect()` は `gatt.connect` → サービス → TX/RX → `startNotifications` まで済んで resolve。初回のペアリングは TX の通知開始で起きる想定なので、パスキー入力の間 `connect()` は待つ。`disconnect()` は待っている `connect()` と書き込みを reject させる。書き込みは `writeValueWithResponse` で 20 バイト以下、通知はコピーして渡す)。`requestTrackerDevice`(NUS の UUID で絞る。名前では絞らない)、`knownTrackerDevices`(`getDevices`)
 - `App`(`state.ts`): `connectBluetooth()` はチューザーをクリックの中で同期的に開く(`await` の前)。チューザーの取り消しはエラーにしない。`connectDevice(device)`、`loadKnownDevices()`/`knownDevices`(起動時に読む。接続カードに「Reconnect to PicoAPRS-XXXX」)
@@ -97,18 +97,31 @@
 - テスト: 偽の GATT(`MockDevice` につないだもの)で `DeviceClient` の §6.2 の流れ、書き込みが 20 バイト以下で 1 つずつ、UTF-8 の分割、ペアリング中の取り消し、リンク切れ、同じ transport での再接続を確かめる(`tests/webBluetooth.test.ts`)。再接続とチューザーは `tests/appReconnect.test.ts`。全体で 32 ファイル 906 件
 - Pi 5 の BlueZ でスキャンしたが、2026-11-18 の時点では近くに広告中のトラッカーはなかった
 
-## 次にやること(作業 5 の実機確認 → 作業 6)
+### 実機確認の結果(2026-11-18。Android 11、Chrome 157。adb は Wi-Fi 経由、`adb reverse` で dev サーバーに接続)
 
-### Android の Chrome で確かめる(利用者の操作が要る)
+- できた: チューザーにトラッカーが出る(NUS の UUID で絞って見つかる)→ 接続 → Status、Settings(実機の値が入る)、Feed、Stations、Radar が実機のデータで開く。Settings は読むだけで、書き込みは試していない(実機の送信設定があるため)
+- **U3(ペアリング)**: パスキー入力のダイアログは **Chrome ではなく Android が出す**。しかも自動では開かず、通知「ペア設定リクエスト」をタップすると開く(Chrome が前面で画面が点いていても同じ)。パスキーは LCD の 6 桁を利用者が入力した。ログ(logcat)では、TX の `startNotifications`(CCCD の書き込み)が成功した約 90 ms 後に SMP が始まっている。TX の通知開始には認証が要らないという回答(Issue #5 のファームウェア側の返信)と合う。つまり引き金は最初の書き込み(`hello`)だと思われるが、どの呼び出しで起きたかは直接は確かめていない。パスキー入力を待つ間、`connect()` は resolve 済みで、アプリは「Connected. Reading the tracker's state…」のまま固まらず待てた
+- 結合済みの端末の再接続: アプリを再読み込みして接続し直すと、パスキーなしで ready になった
+- **この Chrome では `navigator.bluetooth.getDevices` が `undefined`**。「Reconnect to NAME」のボタンは出ず、再読み込みのあとは毎回チューザーを開く。想定内(フラグが要る)
+- 初回の接続(未結合)は 2 回のうち 1 回目が失敗した。`gatt.connect()` が `NetworkError`(Connection attempt failed)。logcat ではリンク確立の約 1.2 秒後に切断理由 `0x08`(supervision timeout)で、GATT 133。2 回目は成功した。再現するかと原因は未確認
+- 約 1 時間後に端末の画面が Disconnected になっていた。原因(トラッカーの電源、距離、端末のスリープ)は記録していない。自動再接続が 20 回で諦めた可能性がある(未確認)
+- アプリの挙動で気づいたこと: 接続中や受信フィードがあるとき、リロードで `beforeunload` の警告が出る(意図した動作)。Settings の保存バーが小さい画面で隠していたので、約 290px から約 110px にした
+- 実機の値(コールサイン、アドレスなど)はこのファイルにも Issue にも書かない
 
-1. トラッカーの電源を入れる(ほかの端末とつながっていないこと。接続中は広告しない)
-2. Pi 5 で `npm run dev -- --host 127.0.0.1 --port 5173 --strictPort`。Android を USB でつなぎ、`adb reverse tcp:5173 tcp:5173`(Windows の場合は VS Code の転送ポートを経由。`adb` は S7)
-3. Android の Chrome で `http://localhost:5173/` を開く(localhost は HTTPS と同じ扱いで Web Bluetooth が使える。dev サーバーは CSP の meta を外す)。`chrome://inspect` でコンソールを見る
-4. 「Connect to device」→ チューザーで `PicoAPRS-XXXX` を選ぶ → ペアリングのダイアログが出るか、LCD の 6 桁を入力できるか(U3)。出たタイミング(チューザー直後、通知の開始、最初の書き込み)を記録する
-5. 接続後: Status の TX 表示、rx が連続して届くか、`dropped`、Settings の読み込み(schema は約 1.1 KB の連続通知)
-6. 再接続: トラッカーを離す/電源を切る → 「Reconnecting…」→ 戻すと自動で ready になるか。アプリを再読み込み → 「Reconnect to PicoAPRS-XXXX」(getDevices)で、チューザーなしで接続できるか
-7. 間違ったパスキー、ダイアログの取り消し、ペアリングを OS 側で削除した後の挙動
-8. 結果を `klaNath/pico2_aprs` の Issue #5 に書き、`connectView.ts` の案内文(`PAIRING_HINT`)を合わせる。戻るボタンと pull-to-refresh の抑止(作業 4 の未確認)もここで確かめる
+## 次にやること(作業 5 の実機確認の続き → 作業 6)
+
+### Android の Chrome で確かめる(利用者の操作が要る。済んだ項目は上の結果)
+
+手順: トラッカーの電源を入れ(ほかの端末とつながっていないこと。接続中は広告しない)、Pi 5 で `npm run dev -- --host 127.0.0.1 --port 5173 --strictPort` を起動し、`adb reverse tcp:5173 tcp:5173`(Windows の場合は VS Code の転送ポートを経由。`adb` は S7)。Android の Chrome で `http://localhost:5173/` を開く(localhost は HTTPS と同じ扱いで Web Bluetooth が使える。dev サーバーは CSP の meta を外す)。端末のロックは私からは解除できない。画面は `adb exec-out screencap -p` で撮れ、DevTools は `adb forward tcp:9222 localabstract:chrome_devtools_remote` で使える(`pkill -f` は自分のシェルを巻き込むので使わない)
+
+残り:
+
+1. **自動再接続を実機で**: トラッカーを離す/電源を切る → 「Reconnecting…」→ 戻すと自動で ready になるか。1 時間後に切れていたこと(上)の原因も見る
+2. 初回の接続の失敗(GATT 133、supervision timeout)が再現するか。結合を両側で消してから数回試す
+3. 間違ったパスキー、ダイアログの取り消し、ペアリングを OS 側で削除した後の挙動(Issue #5 のテスト計画)
+4. 接続後の rx の連続受信、`dropped`、Settings の書き込み(Q1 のテスト用コールサインに替えられる環境で)、schema の読み込み時間
+5. `connectView.ts` の案内文(`PAIRING_HINT`)に「通知の『ペア設定リクエスト』をタップする」を足す(Android のとき)。戻るボタンと pull-to-refresh の抑止(作業 4 の未確認)も確かめる
+6. 仕様側: Issue #5 にファームウェア側の返信がある(`docs/ble-protocol.md` 0.4 §4、ブランチ `ble-issues-1-6`)。60 秒以内に認証されないと切られ、パスキー待ちの目安になる。アプリの `hello` の再送(3 秒 × 5 回)は、リンクが切れるか 60 秒たつまで続ける案。`npm run spec:update` でピンを進めて確認する(まだ進めていない)
 
 ### 作業 6(PWA と Pages)
 
@@ -125,6 +138,5 @@ plan.md の順。`vite.config.ts`(dev だけ CSP を外すプラグインがあ�
 ## 未確認・未決定
 
 - Pi 5 の Chromium で Web Bluetooth が使えるか(フラグが必要かもしれない)
-- Android での実機確認(adb、`chrome://inspect`)は、作業 5 までに用意する(Windows に `winget install Google.PlatformTools`)
-- 仕様の未確定項目: U3(Chrome でペアリングダイアログが出るか。Web アプリから試すのは初めて)、U2(Device Information Service)、U5(`hello` にファームウェアの版を入れるか)、U6(`settings.set` の保存中に受信がどれだけ欠けるか)、U8(Bluetooth 5.x の Windows で通知が止まる問題が出ないか)
+- 仕様の未確定項目: U3(Chrome での結果は「実機確認の結果」に書いた。間違ったパスキーと取り消しは未確認なので Issue #5 は開いたまま)、U2(Device Information Service)、U5(`hello` にファームウェアの版を入れるか)、U6(`settings.set` の保存中に受信がどれだけ欠けるか)、U8(Bluetooth 5.x の Windows で通知が止まる問題が出ないか)
 - GitHub Pages の公開設定は、作業 6 のとき。非公開リポジトリで Pages を使えるプランかどうか確認する
