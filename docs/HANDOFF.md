@@ -103,6 +103,7 @@
 - **この Chrome では `navigator.bluetooth.getDevices` が `undefined`**。「Reconnect to NAME」のボタンは出ず、再読み込みのあとは毎回チューザーを開く。想定内(フラグが要る)
 - 初回の接続(未結合)は 2 回のうち 1 回目が失敗した。`gatt.connect()` が `NetworkError`(Connection attempt failed)。logcat ではリンク確立の約 1.2 秒後に切断理由 `0x08`(supervision timeout)で、GATT 133。2 回目は成功した。再現するかと原因は未確認
 - 約 1 時間後に端末の画面が Disconnected になっていた。原因(トラッカーの電源、距離、端末のスリープ)は記録していない。自動再接続が 20 回で諦めた可能性がある(未確認)
+- 公開サイトでの確認(2026-11-19、Android 11、Chrome 157): 接続して ready になった。最初の接続が約 12 秒で切れたが、ファームウェアの更新(トラッカーの再起動)のためで、不具合ではない。切れた約 1 秒後に自動再接続が始まり、約 6 秒で ready に戻った(相手が一度落ちて戻る場合の再接続は実機で確認できた)
 - アプリの挙動で気づいたこと: 接続中や受信フィードがあるとき、リロードで `beforeunload` の警告が出る(意図した動作)。Settings の保存バーが小さい画面で隠していたので、約 290px から約 110px にした
 - 実機の値(コールサイン、アドレスなど)はこのファイルにも Issue にも書かない
 
@@ -114,20 +115,21 @@
 
 残り:
 
-1. **自動再接続を実機で**: トラッカーを離す/電源を切る → 「Reconnecting…」→ 戻すと自動で ready になるか。1 時間後に切れていたこと(上)の原因も見る
+1. 自動再接続の残り: トラッカーを離す、電源を切る(戻らない場合の「20 回で諦める」まで)。戻る場合は 2026-11-19 に確認済み(上)。1 時間後に切れていた件の原因は不明のまま
 2. 初回の接続の失敗(GATT 133、supervision timeout)が再現するか。結合を両側で消してから数回試す
 3. 間違ったパスキー、ダイアログの取り消し、ペアリングを OS 側で削除した後の挙動(Issue #5 のテスト計画)
 4. 接続後の rx の連続受信、`dropped`、Settings の書き込み(Q1 のテスト用コールサインに替えられる環境で)、schema の読み込み時間
 5. 戻るボタンと pull-to-refresh の抑止(作業 4 の未確認)を確かめる。`PAIRING_HINT` と接続待ちの表示には「通知の『Pairing request』を開く」を足した(Android 実機で表示を確認済み。「Do it soon, because the tracker drops a connection that stays unpaired」は、ファームウェア側の 60 秒の切断が実機では未確認のままの記述)
 6. 仕様 v0.4 への対応(2026-11-18 に済み。下の「仕様 v0.4 への対応」)。残りは実機での確認: `hello` の再送が 60 秒続くこと、書き込み失敗後の `\n`(§5.3)の挙動
 
-### 作業 6(PWA と Pages): PWA は実装済み。配信は未実施
+### 作業 6(PWA と Pages): 実装と配信まで済み(自動配信は未設定)
 
 - 実装済み(2026-11-18): `vite-plugin-pwa`(`vite.config.ts`。`registerType: "prompt"`、`injectRegister: false`、generateSW、precache のみ、`navigateFallback`)。`base: "./"`(Pages の `/<repo>/` でも、`file://` でも動く)。manifest(standalone、`start_url`/`scope`/`id` は `./`、テーマ色 `#0f141b`)。アイコンは `public/` の `favicon.svg`(レーダーの図。Vite の雛形のロゴから差し替え)、`icon-192.png`、`icon-512.png`(maskable も兼ねる。中身は安全域の内側)、`apple-touch-icon.png`。`public/icons.svg`(雛形の残り)は削除
 - 更新は自動で行わない: `src/pwa.ts` が登録し、新しい版が待機すると `src/ui/updateBanner.ts` の案内「A new version is available.」と「Update」ボタン(接続中は「接続が切れる」と書く)。初回だけ「オフラインで動く」の案内(Dismiss)。本番ビルドのときだけ登録する(dev は登録しない)
 - 実機で確認(Android 11、Chrome 157、`vite preview` を `adb reverse` 経由): service worker が activated、precache 済み、サーバーを止めてリロードしても起動する(`controller` あり)、「オフラインで動く」の案内が出る。確認していない: ホーム画面への追加(インストール)、更新の流れ(新しい版を出して「Update」を押す)
+- 公開サイト https://klanath.github.io/pico2_aprs_webclient/(workflow を手動で実行して配信。2026-11-19): Android の Chrome で service worker が activated、precache 10 件、`installabilityErrors` は空(インストール可能)、通信を切ってリロードしても起動(`controlled: true`)、Web Bluetooth で実機に接続できた。確認していない: ホーム画面に追加した後の standalone 表示、新しい版が出たときの「Update」
 - `.github/workflows/deploy.yml`: build(typecheck、lint、test、build)と deploy。**手動実行だけ**にしてある(`workflow_dispatch`)。Pages を有効にするまで、push で動かすと毎回失敗するため
-- 未実施: GitHub Pages の有効化(リポジトリは 2026-11-19 に公開した。ホスト名などは書き換え済み)。Settings > Pages > Source を GitHub Actions にし、workflow を手動で 1 回動かして URL と動作を確かめてから、`on:` に `push: { branches: [main] }` を足す。サブモジュールの `klaNath/pico2_aprs` も公開されている
+- Pages は有効(Source は GitHub Actions)で、配信済み。workflow は手動実行だけ(`workflow_dispatch`)。残り: `on:` に `push: { branches: [main] }` を足して自動配信にする。`ubuntu-latest` は 2026-10-19 から Ubuntu 26 に移る通知がある(問題が出たら `ubuntu-24.04` などに固定)。サブモジュールの `klaNath/pico2_aprs` も公開されている
 
 ## 仕様 v0.4 への対応(ピンを `f6e3364` → `f8cd818`)
 
