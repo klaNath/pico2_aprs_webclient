@@ -181,11 +181,91 @@ describe("validateSetting for items the app does not know", () => {
     expect(validateSetting("name", null, schema)).toEqual({ value: null });
     expect(validateSetting("name", "abcd", schema)).toEqual({ value: "abcd" });
     expect(validateSetting("name", "abcde", schema)).toHaveProperty("error");
-    expect(validateSetting("name", "ABC", schema)).toHaveProperty("error");
+    // The pattern comes from the device and is only a hint: it is not run (see the ReDoS test).
+    expect(validateSetting("name", "ABC", schema)).toEqual({ value: "ABC" });
     expect(validateSetting("tags", ["a", "b"], schema)).toEqual({ value: ["a", "b"] });
     expect(validateSetting("tags", ["a", "b", "c"], schema)).toHaveProperty("error");
     expect(validateSetting("weird", 1, schema)).toHaveProperty("error");
     expect(validateSetting("volume", NaN, schema)).toHaveProperty("error");
+  });
+});
+
+describe("validateSetting does not trust the device's schema", () => {
+  it("never runs a pattern from the device (ReDoS)", () => {
+    const schema: SchemaItem[] = [{ key: "evil", type: "str", pattern: "^(a+)+$" }];
+    const t0 = Date.now();
+    expect(validateSetting("evil", `${"a".repeat(40)}!`, schema)).toEqual({
+      value: `${"a".repeat(40)}!`,
+    });
+    expect(Date.now() - t0).toBeLessThan(200);
+  });
+
+  it("still checks the callsign with the app's own pattern", () => {
+    expect(validateSetting("callsign", "AB")).toHaveProperty("error");
+    expect(validateSetting("callsign", "Q1TESTX")).toHaveProperty("error");
+  });
+
+  it("treats a limit that is not a finite number as no limit", () => {
+    const bad = [null, "5", NaN, Infinity, {}, [], true];
+    for (const b of bad) {
+      const schema = [
+        { key: "n", type: "int", min: b, max: b },
+        { key: "f", type: "float", min: b, max: b },
+        { key: "s", type: "str", len: b, max_len: b },
+        { key: "l", type: "list", max_items: b },
+      ] as unknown as SchemaItem[];
+      const tag = JSON.stringify(b) ?? String(b);
+      expect(validateSetting("n", 99999, schema), tag).toEqual({ value: 99999 });
+      expect(validateSetting("n", 1.5, schema), tag).toHaveProperty("error"); // still an integer
+      expect(validateSetting("f", -1e9, schema), tag).toEqual({ value: -1e9 });
+      expect(validateSetting("f", NaN, schema), tag).toHaveProperty("error");
+      expect(validateSetting("s", "x".repeat(500), schema), tag).toEqual({
+        value: "x".repeat(500),
+      });
+      expect(validateSetting("l", ["a", "b", "c", "d"], schema), tag).toEqual({
+        value: ["a", "b", "c", "d"],
+      });
+    }
+  });
+
+  it("a limit that is a finite number still applies", () => {
+    const schema: SchemaItem[] = [{ key: "n", type: "int", min: 0, max: 5, nullable: false }];
+    expect(validateSetting("n", 6, schema)).toHaveProperty("error");
+    expect(validateSetting("n", null, schema)).toHaveProperty("error");
+  });
+
+  it("nullable counts only when it is exactly true", () => {
+    const schema = [{ key: "n", type: "int", nullable: "yes" }] as unknown as SchemaItem[];
+    expect(validateSetting("n", null, schema)).toHaveProperty("error");
+  });
+
+  it("keeps a key such as __proto__ or constructor as data", () => {
+    const schema: SchemaItem[] = [
+      { key: "__proto__", type: "int" },
+      { key: "constructor", type: "int" },
+    ];
+    const r = normalizeSettings(JSON.parse('{"__proto__": 1, "constructor": 2}'), schema);
+    expect(r).toHaveProperty("values");
+    const values = (r as { values: Record<string, unknown> }).values;
+    expect(Object.hasOwn(values, "__proto__")).toBe(true);
+    expect(values.constructor).toBe(2);
+    expect(Object.getPrototypeOf(values)).toBeNull();
+  });
+});
+
+describe("path is checked before it is upper-cased", () => {
+  it("rejects letters that upper-case into ASCII", () => {
+    // "ß".toUpperCase() is "SS", "ﬁ" is "FI", a dotless "ı" is "I".
+    for (const e of ["ß", "ﬁ1", "wıde1-1", "ſ1", "Ａ1"]) {
+      expect(validateSetting("path", [e]), e).toEqual({ error: "entries like WIDE1-1" });
+    }
+  });
+  it("still accepts and upper-cases ASCII entries", () => {
+    expect(validateSetting("path", ["wide1-1", "Wide2-15"])).toEqual({
+      value: ["WIDE1-1", "WIDE2-15"],
+    });
+    expect(validateSetting("path", ["WIDE1-16"])).toHaveProperty("error");
+    expect(validateSetting("path", ["TOOLONG1"])).toHaveProperty("error");
   });
 });
 

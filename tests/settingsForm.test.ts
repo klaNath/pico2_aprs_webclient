@@ -11,13 +11,17 @@ import {
   confirmationFor,
   describeError,
   deviceChangedKeys,
+  emptyDraft,
   evaluateForm,
+  executeReset,
   executeSave,
   fieldLabel,
   fieldUnit,
   fullCall,
+  getOwn,
   groupItems,
   humanSeconds,
+  itemDesc,
   miceLabel,
   miceOptions,
   parseNumberInput,
@@ -26,7 +30,7 @@ import {
   setDraft,
   widgetKindFor,
 } from "../src/ui/settingsForm.ts";
-import type { SavableClient } from "../src/ui/settingsForm.ts";
+import type { ResettableClient, SavableClient } from "../src/ui/settingsForm.ts";
 
 const SCHEMA = KNOWN_SETTINGS as SchemaItem[];
 const CURRENT: SettingsValues = structuredClone(DEFAULT_SETTINGS);
@@ -227,8 +231,8 @@ describe("confirmations", () => {
   it("every SettingsRisk has a dialog with a title, text and a danger confirm button", () => {
     // ALL_RISKS is a Record<SettingsRisk, true> underneath, so a new risk fails to compile
     // until it is added there; this checks that each one has real text.
-    const probe: SettingsValues = { callsign: "Q1NEW", tx_enabled: true };
-    expect(ALL_RISKS.slice().sort()).toEqual(["callsign", "tx_enable"]);
+    const probe: SettingsValues = { callsign: "Q1NEW", ssid: 3, tx_enabled: true };
+    expect(ALL_RISKS).toEqual(["callsign", "ssid", "tx_enable"]); // the order the user is asked in
     for (const risk of ALL_RISKS) {
       const o = confirmationFor(risk, CURRENT, probe);
       expect(o.title.length).toBeGreaterThan(5);
@@ -270,6 +274,25 @@ describe("confirmations", () => {
     expect(cleared.title).toMatch(/Clear/);
     expect(cleared.body.join(" ")).toMatch(/not transmit/);
   });
+  it("the ssid dialog shows old -> new on the air, with the current callsign", () => {
+    const o = confirmationFor("ssid", CURRENT, { ssid: 3 });
+    expect(o.title).toBe("Change the SSID?");
+    expect(o.facts).toEqual(["On the air as: Q1TEST-7 → Q1TEST-3", "SSID: 7 → 3"]);
+    expect(o.body.join(" ")).toMatch(/CALL-SSID/);
+    expect(o.danger).toBe(true);
+    expect(confirmationFor("ssid", CURRENT, { ssid: 0 }).facts?.[0]).toBe(
+      "On the air as: Q1TEST-7 → Q1TEST",
+    );
+  });
+  it("the ssid dialog uses the new callsign when it changes in the same save", () => {
+    const o = confirmationFor("ssid", CURRENT, { ssid: 3, callsign: "Q1NEW" });
+    expect(o.facts?.[0]).toBe("On the air as: Q1TEST-7 → Q1NEW-3");
+  });
+  it("the ssid dialog admits that there is no callsign", () => {
+    const o = confirmationFor("ssid", { ...CURRENT, callsign: null }, { ssid: 3 });
+    expect(o.facts?.[0]).toBe("On the air as: not set → not set");
+    expect(o.body.join(" ")).toMatch(/will not transmit/);
+  });
   it("the reset dialog is dangerous and says what is lost", () => {
     const o = resetConfirmation(CURRENT, true, false);
     expect(o.danger).toBe(true);
@@ -297,6 +320,7 @@ class FakeClient implements SavableClient {
   requiredConfirmations(values: Record<string, unknown>): SettingsRisk[] {
     const r: SettingsRisk[] = [];
     if ("callsign" in values && values.callsign !== this.settings.callsign) r.push("callsign");
+    if ("ssid" in values && values.ssid !== this.settings.ssid) r.push("ssid");
     if (values.tx_enabled === true && this.settings.tx_enabled !== true) r.push("tx_enable");
     return r;
   }
@@ -389,6 +413,70 @@ describe("executeSave (dialogs before sending)", () => {
     expect(shown.join("\n")).toContain("as Q1NEW-7");
     expect(c.sent[0]?.values.callsign).toBe("Q1NEW");
   });
+  it("an ssid change always asks, whether or not transmit is enabled", async () => {
+    for (const tx of [false, true]) {
+      const c = new FakeClient();
+      c.settings.tx_enabled = tx;
+      const titles: string[] = [];
+      const out = await executeSave(c, { ssid: 3 }, (o) => {
+        titles.push(o.title);
+        return Promise.resolve(false);
+      });
+      expect(out).toEqual({ kind: "cancelled", risk: "ssid" });
+      expect(titles).toEqual(["Change the SSID?"]);
+      expect(c.sent).toEqual([]);
+    }
+  });
+  it("an ssid change is sent with the ssid confirmation", async () => {
+    const c = new FakeClient();
+    await executeSave(c, { ssid: 3 }, () => Promise.resolve(true));
+    expect(c.sent).toEqual([{ values: { ssid: 3 }, confirmed: ["ssid"] }]);
+  });
+  it("asks callsign, then ssid, then tx_enable, and sends all three confirmations", async () => {
+    const c = new FakeClient();
+    const titles: string[] = [];
+    const out = await executeSave(c, { tx_enabled: true, ssid: 3, callsign: "Q1NEW" }, (o) => {
+      titles.push(o.title);
+      return Promise.resolve(true);
+    });
+    expect(out.kind).toBe("saved");
+    expect(titles).toEqual(["Change the callsign?", "Change the SSID?", "Enable transmit?"]);
+    expect(c.sent[0]?.confirmed).toEqual(["callsign", "ssid", "tx_enable"]);
+  });
+  it("refusing the ssid dialog stops everything, tx_enable is not even asked", async () => {
+    const c = new FakeClient();
+    const titles: string[] = [];
+    const out = await executeSave(c, { tx_enabled: true, ssid: 3, callsign: "Q1NEW" }, (o) => {
+      titles.push(o.title);
+      return Promise.resolve(o.title !== "Change the SSID?");
+    });
+    expect(out).toEqual({ kind: "cancelled", risk: "ssid" });
+    expect(titles).toEqual(["Change the callsign?", "Change the SSID?"]);
+    expect(c.sent).toEqual([]);
+  });
+  it("tx_enable: a callsign or SSID changed on the device meanwhile makes it stale", async () => {
+    for (const change of [
+      (c: FakeClient) => (c.settings.callsign = "Q1ZZZ"),
+      (c: FakeClient) => (c.settings.ssid = 1),
+    ]) {
+      const c = new FakeClient();
+      const out = await executeSave(c, { tx_enabled: true }, () => {
+        change(c);
+        return Promise.resolve(true);
+      });
+      expect(out.kind).toBe("stale");
+      expect(c.sent).toEqual([]);
+    }
+  });
+  it("ssid: a callsign changed on the device meanwhile makes it stale", async () => {
+    const c = new FakeClient();
+    const out = await executeSave(c, { ssid: 3 }, () => {
+      c.settings.callsign = "Q1ZZZ";
+      return Promise.resolve(true);
+    });
+    expect(out.kind).toBe("stale");
+    expect(c.sent).toEqual([]);
+  });
   it("does not send when the device's values changed while a dialog was open", async () => {
     const c = new FakeClient();
     const out = await executeSave(c, { callsign: "Q1NEW" }, () => {
@@ -397,6 +485,116 @@ describe("executeSave (dialogs before sending)", () => {
     });
     expect(out.kind).toBe("stale");
     expect(c.sent).toEqual([]);
+  });
+});
+
+class FakeResetClient implements ResettableClient {
+  settings: SettingsValues = structuredClone(DEFAULT_SETTINGS);
+  settingsKnown = true;
+  resets = 0;
+  resetSettings(c: { confirmed: true }): ReturnType<ResettableClient["resetSettings"]> {
+    expect(c).toEqual({ confirmed: true });
+    this.resets++;
+    return Promise.resolve({ t: "settings", values: { ...DEFAULT_SETTINGS }, changed: [] });
+  }
+}
+
+describe("executeReset (dialog before resetting)", () => {
+  it("asks first, with the reset dialog, and resets after a yes", async () => {
+    const c = new FakeResetClient();
+    const seen: ConfirmOptions[] = [];
+    const out = await executeReset(
+      c,
+      (o) => {
+        seen.push(o);
+        expect(c.resets).toBe(0); // nothing is sent before the answer
+        return Promise.resolve(true);
+      },
+      true,
+    );
+    expect(out.kind).toBe("reset");
+    expect(c.resets).toBe(1);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.title).toBe("Reset all settings?");
+    expect(seen[0]?.body.join(" ")).toMatch(/unsaved edits/);
+  });
+  it("a no sends nothing", async () => {
+    const c = new FakeResetClient();
+    expect(await executeReset(c, () => Promise.resolve(false), false)).toEqual({
+      kind: "cancelled",
+    });
+    expect(c.resets).toBe(0);
+  });
+  it("does not reset when the callsign, SSID or transmit permission changed during the dialog", async () => {
+    for (const change of [
+      (c: FakeResetClient) => (c.settings.callsign = "Q1ZZZ"),
+      (c: FakeResetClient) => (c.settings.ssid = 1),
+      (c: FakeResetClient) => (c.settings.tx_enabled = true),
+    ]) {
+      const c = new FakeResetClient();
+      const out = await executeReset(
+        c,
+        () => {
+          change(c);
+          return Promise.resolve(true);
+        },
+        false,
+      );
+      expect(out.kind).toBe("stale");
+      expect(c.resets).toBe(0);
+    }
+  });
+});
+
+describe("keys from the device are data, not property names", () => {
+  const weird = ["constructor", "toString", "__proto__", "hasOwnProperty", "valueOf"];
+  it("labels, groups and units do not answer for them", () => {
+    for (const key of weird) {
+      const it = { key, type: "str" };
+      expect(fieldLabel(it)).toBe(key);
+      expect(fieldUnit(it)).toBeUndefined();
+      expect(groupItems([it]).map((g) => g.title)).toEqual(["Other"]);
+      expect(getOwn({ a: 1 }, key)).toBeUndefined();
+    }
+  });
+  it("edits and evaluation work for such a key", () => {
+    for (const key of weird) {
+      const schema: SchemaItem[] = [{ key, type: "int", min: 0, max: 5 }];
+      const current: SettingsValues = Object.create(null) as SettingsValues;
+      const d = setDraft(emptyDraft(), current, key, 3);
+      expect(Object.hasOwn(d, key)).toBe(true);
+      const ev = evaluateForm(schema, current, d);
+      expect(ev.dirty).toEqual([key]);
+      expect(ev.changes[key]).toBe(3);
+      // Not edited: nothing, even though `key in {}` would be true for "constructor".
+      expect(evaluateForm(schema, current, emptyDraft()).dirty).toEqual([]);
+      expect(evaluateForm(schema, {}, {}).dirty).toEqual([]);
+    }
+  });
+  it("an edit back to the device's value removes the edit also for such a key", () => {
+    const current = JSON.parse('{"constructor": 2}') as SettingsValues;
+    const d1 = setDraft(emptyDraft(), current, "constructor", 4);
+    expect(Object.hasOwn(d1, "constructor")).toBe(true);
+    const d2 = setDraft(d1, current, "constructor", 2);
+    expect(Object.hasOwn(d2, "constructor")).toBe(false);
+  });
+  it("a repeated key is one item", () => {
+    const schema: SchemaItem[] = [
+      { key: "x", type: "int" },
+      { key: "x", type: "str" },
+    ];
+    expect(groupItems(schema)[0]?.items).toHaveLength(1);
+    const d = setDraft(emptyDraft(), {}, "x", 1);
+    expect(evaluateForm(schema, {}, d).dirty).toEqual(["x"]);
+  });
+  it("a description that is not a string is ignored", () => {
+    for (const desc of [5, null, {}, [], true]) {
+      const it = { key: "x", type: "int", desc } as unknown as SchemaItem;
+      expect(itemDesc(it)).toBeUndefined();
+      expect(fieldUnit(it)).toBeUndefined();
+    }
+    expect(itemDesc({ key: "x", type: "int", desc: "Hello (s)" })).toBe("Hello (s)");
+    expect(fieldUnit({ key: "x", type: "int", desc: "Hello (s)" })).toBe("s");
   });
 });
 

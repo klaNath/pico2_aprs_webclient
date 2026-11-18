@@ -12,6 +12,37 @@ import type { SettingsRisk } from "../protocol/settings.ts";
 import type { SchemaItem, SettingValue, SettingsMsg, SettingsValues } from "../protocol/types.ts";
 import type { ConfirmOptions } from "./dialog.ts";
 
+// ---- keys from the device are data, never property names ---------------------------------------
+// A schema key may be "constructor" or "toString". Plain objects must not answer for such a key.
+
+/** `obj[key]` only when `key` is an own property of `obj`. */
+export function getOwn<T>(
+  obj: Readonly<Record<string, T>> | undefined,
+  key: string,
+): T | undefined {
+  return obj !== undefined && Object.hasOwn(obj, key) ? obj[key] : undefined;
+}
+
+/** True when `key` is an own property (the safe form of `key in obj`). */
+export function hasOwn(obj: object | undefined, key: string): boolean {
+  return obj !== undefined && Object.hasOwn(obj, key);
+}
+
+/** A new empty object with no prototype, so that any key (even "__proto__") is plain data. */
+function bareObject<T>(): Record<string, T> {
+  return Object.create(null) as Record<string, T>;
+}
+
+/** The items with a repeated key left out (the first one wins), so that one key is one form row. */
+export function uniqueItems(schema: readonly SchemaItem[]): SchemaItem[] {
+  const seen = new Set<string>();
+  return schema.filter((i) => {
+    if (seen.has(i.key)) return false;
+    seen.add(i.key);
+    return true;
+  });
+}
+
 // ---- which widget does an item get ------------------------------------------------------------
 
 export type WidgetKind =
@@ -77,7 +108,12 @@ const LABELS: Readonly<Record<string, string>> = {
 
 /** A readable name for the item; an item the app does not know is shown by its key. */
 export function fieldLabel(item: SchemaItem): string {
-  return LABELS[item.key] ?? item.key;
+  return getOwn(LABELS, item.key) ?? item.key;
+}
+
+/** The description of the item, when the device sent a usable one (a string). */
+export function itemDesc(item: SchemaItem): string | undefined {
+  return typeof item.desc === "string" && item.desc !== "" ? item.desc : undefined;
 }
 
 const UNITS: Readonly<Record<string, string>> = {
@@ -88,9 +124,9 @@ const UNITS: Readonly<Record<string, string>> = {
 
 /** The unit shown after a number input (known items, or a short "(unit)" ending the description). */
 export function fieldUnit(item: SchemaItem): string | undefined {
-  const known = UNITS[item.key];
+  const known = getOwn(UNITS, item.key);
   if (known) return known;
-  const m = /\(([A-Za-z°%/]{1,5})\)\s*$/.exec(item.desc ?? "");
+  const m = /\(([A-Za-z°%/]{1,5})\)\s*$/.exec(itemDesc(item) ?? "");
   return m?.[1];
 }
 
@@ -116,9 +152,10 @@ const GROUP_ORDER: readonly GroupTitle[] = ["Identity", "Beacon", "Transmit", "O
 export function groupItems(
   schema: readonly SchemaItem[],
 ): { title: GroupTitle; items: SchemaItem[] }[] {
+  const items = uniqueItems(schema);
   return GROUP_ORDER.map((title) => ({
     title,
-    items: schema.filter((i) => (GROUP_BY_KEY[i.key] ?? "Other") === title),
+    items: items.filter((i) => (getOwn(GROUP_BY_KEY, i.key) ?? "Other") === title),
   })).filter((g) => g.items.length > 0);
 }
 
@@ -160,6 +197,11 @@ export function parseNumberInput(text: string): number | string {
 /** The edits made in the form: only the items the user has touched, with the raw edited value. */
 export type Draft = Readonly<Record<string, unknown>>;
 
+/** An empty draft (no prototype: a key from the device is never a property name). */
+export function emptyDraft(): Draft {
+  return bareObject<unknown>();
+}
+
 /**
  * Record an edit. An edit back to the device's value removes the entry, so that "edited" means
  * "different from the device".
@@ -170,8 +212,8 @@ export function setDraft(
   key: string,
   value: unknown,
 ): Draft {
-  const next: Record<string, unknown> = { ...draft };
-  if (key in current && settingEquals(value, current[key])) delete next[key];
+  const next: Record<string, unknown> = Object.assign(bareObject<unknown>(), draft);
+  if (hasOwn(current, key) && settingEquals(value, current[key])) delete next[key];
   else next[key] = value;
   return next;
 }
@@ -196,18 +238,18 @@ export function evaluateForm(
   current: Readonly<SettingsValues>,
   draft: Draft,
 ): FormEval {
-  const changes: SettingsValues = {};
-  const errors: Record<string, string> = {};
+  const changes: SettingsValues = bareObject<SettingValue>();
+  const errors: Record<string, string> = bareObject<string>();
   const dirty: string[] = [];
-  for (const item of schema) {
+  for (const item of uniqueItems(schema)) {
     const key = item.key;
-    if (!(key in draft) || widgetKindFor(item) === "readonly") continue;
+    if (!hasOwn(draft, key) || widgetKindFor(item) === "readonly") continue;
     const raw = draft[key];
     const r = validateSetting(key, raw, schema);
     if ("error" in r) {
       errors[key] = fieldError(key, raw, r.error);
       dirty.push(key);
-    } else if (!(key in current) || !settingEquals(r.value, current[key])) {
+    } else if (!hasOwn(current, key) || !settingEquals(r.value, current[key])) {
       changes[key] = r.value;
       dirty.push(key);
     }
@@ -237,13 +279,13 @@ export function deviceChangedKeys(
   current: Readonly<SettingsValues>,
   draft: Draft,
 ): string[] {
-  return Object.keys(draft).filter((k) => !settingEquals(prev[k], current[k]));
+  return Object.keys(draft).filter((k) => !settingEquals(getOwn(prev, k), getOwn(current, k)));
 }
 
 // ---- confirmations ---------------------------------------------------------------------------
 
 /** Every kind of confirmation. A new `SettingsRisk` makes this fail to compile until it is added. */
-const RISK_TABLE: Record<SettingsRisk, true> = { callsign: true, tx_enable: true };
+const RISK_TABLE: Record<SettingsRisk, true> = { callsign: true, ssid: true, tx_enable: true };
 export const ALL_RISKS = Object.keys(RISK_TABLE) as SettingsRisk[];
 
 function show(v: unknown): string {
@@ -283,6 +325,29 @@ export function confirmationFor(
               ],
         facts: [`Callsign: ${show(oldCall)} → ${show(newCall)}`],
         confirmLabel: newCall === null ? "Clear callsign" : "Change callsign",
+        danger: true,
+      };
+    }
+    case "ssid": {
+      // The identity on the air is CALL-SSID. A callsign changed in the same save counts.
+      const oldCall = fullCall(current.callsign, current.ssid);
+      const newCall = fullCall(
+        "callsign" in changes ? changes.callsign : current.callsign,
+        "ssid" in changes ? changes.ssid : current.ssid,
+      );
+      return {
+        title: "Change the SSID?",
+        body: [
+          newCall
+            ? "The SSID is part of the name the tracker uses on the air (CALL-SSID). Beacons sent after this change will carry the new name, so other stations will see a different station."
+            : "The SSID is part of the name the tracker uses on the air (CALL-SSID). No callsign will be set, so the tracker will not transmit until a callsign is set.",
+          "Only change it if you mean to be identified by the new name.",
+        ],
+        facts: [
+          `On the air as: ${oldCall ?? "not set"} → ${newCall ?? "not set"}`,
+          `SSID: ${show(current.ssid)} → ${show(changes.ssid)}`,
+        ],
+        confirmLabel: "Change SSID",
         danger: true,
       };
     }
@@ -358,7 +423,30 @@ export type SavableClient = Pick<
 >;
 
 function sameOn(a: Readonly<SettingsValues>, b: Readonly<SettingsValues>, keys: string[]): boolean {
-  return keys.every((k) => settingEquals(a[k], b[k]));
+  return keys.every((k) => settingEquals(getOwn(a, k), getOwn(b, k)));
+}
+
+/** The kinds of confirmation in the order the user is asked (the order of ALL_RISKS). */
+function orderRisks(needed: readonly SettingsRisk[]): SettingsRisk[] {
+  return [
+    ...ALL_RISKS.filter((r) => needed.includes(r)),
+    ...needed.filter((r) => !ALL_RISKS.includes(r)),
+  ];
+}
+
+/**
+ * Items whose device value must not change while a dialog is open. The dialogs name the callsign
+ * and SSID the tracker will use on the air: the tx_enable dialog uses both, the ssid dialog the
+ * callsign.
+ */
+function guardedKeys(changed: string[], risks: readonly SettingsRisk[]): string[] {
+  const keys = new Set(changed);
+  if (risks.includes("tx_enable")) {
+    keys.add("callsign");
+    keys.add("ssid");
+  }
+  if (risks.includes("ssid")) keys.add("callsign");
+  return [...keys];
 }
 
 /**
@@ -373,12 +461,8 @@ export async function executeSave(
 ): Promise<SaveOutcome> {
   const snapshot = structuredClone(changes) as SettingsValues;
   const current = structuredClone(client.settings);
-  const keys = Object.keys(snapshot);
-  const needed = client.requiredConfirmations(snapshot);
-  const ordered = [
-    ...ALL_RISKS.filter((r) => needed.includes(r)),
-    ...needed.filter((r) => !ALL_RISKS.includes(r)),
-  ];
+  const ordered = orderRisks(client.requiredConfirmations(snapshot));
+  const keys = guardedKeys(Object.keys(snapshot), ordered);
   const confirmed: SettingsRisk[] = [];
   for (const risk of ordered) {
     if (!(await confirm(confirmationFor(risk, current, snapshot)))) {
@@ -396,6 +480,35 @@ export async function executeSave(
     return { kind: "stale" };
   }
   return { kind: "saved", result: await client.setSettings(snapshot, { confirmed }) };
+}
+
+export type ResetOutcome =
+  | { kind: "reset"; result: SettingsMsg }
+  /** The user refused. Nothing was sent. */
+  | { kind: "cancelled" }
+  /** The callsign, SSID or transmit permission changed while the dialog was open. Nothing was sent. */
+  | { kind: "stale" };
+
+export type ResettableClient = Pick<DeviceClient, "resetSettings" | "settings" | "settingsKnown">;
+
+/**
+ * Ask for the confirmation of "Reset to defaults", then reset. Nothing is sent without a "yes".
+ * `dirty` says whether the form has unsaved edits (the dialog mentions that they are discarded).
+ */
+export async function executeReset(
+  client: ResettableClient,
+  confirm: (opts: ConfirmOptions) => Promise<boolean>,
+  dirty: boolean,
+): Promise<ResetOutcome> {
+  const current = structuredClone(client.settings);
+  const known = client.settingsKnown;
+  if (!(await confirm(resetConfirmation(current, known, dirty)))) return { kind: "cancelled" };
+  // The dialog said what the callsign and transmit permission are now. If they are not that any
+  // more, the user did not confirm this reset.
+  if (!sameOn(current, client.settings, ["callsign", "ssid", "tx_enabled"])) {
+    return { kind: "stale" };
+  }
+  return { kind: "reset", result: await client.resetSettings({ confirmed: true }) };
 }
 
 // ---- errors ----------------------------------------------------------------------------------

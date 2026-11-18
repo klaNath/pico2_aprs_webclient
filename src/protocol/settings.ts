@@ -65,24 +65,43 @@ const KNOWN_BY_KEY: ReadonlyMap<string, SchemaItem> = new Map(
   KNOWN_SETTINGS.map((i) => [i.key, i]),
 );
 
-function range(item: SchemaItem): string {
-  return item.min !== undefined && item.max !== undefined ? ` ${item.min}-${item.max}` : "";
+/**
+ * A constraint from a schema, as a number, or undefined when it is missing or not a finite number
+ * (`max: null`, a string, NaN, ...). The device's schema is not trusted: a bad constraint means
+ * "no constraint", never an exception or a limit of NaN.
+ */
+export function finiteLimit(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }
 
-/** Check a value against one schema item (type, finite number, range, length, nullable). */
-function checkItem(item: SchemaItem, v: unknown): SettingCheck {
+function range(item: SchemaItem): string {
+  const min = finiteLimit(item.min);
+  const max = finiteLimit(item.max);
+  return min !== undefined && max !== undefined ? ` ${min}-${max}` : "";
+}
+
+/**
+ * Check a value against one schema item (type, finite number, range, length, nullable).
+ *
+ * `trusted` is true only for the items this app defines itself (KNOWN_SETTINGS). The `pattern` of
+ * any other item comes from the device and is never run: a regular expression from outside can
+ * hang the page (ReDoS). It is only a hint for the user (§9.2: "a guide to the format").
+ */
+function checkItem(item: SchemaItem, v: unknown, trusted: boolean): SettingCheck {
   if (v === null) {
-    return item.nullable ? { value: null } : { error: `${item.type} required, not null` };
+    return item.nullable === true ? { value: null } : { error: `${item.type} required, not null` };
   }
   switch (item.type) {
     case "int":
     case "float": {
       const isInt = item.type === "int";
-      const ok = typeof v === "number" && (isInt ? Number.isInteger(v) : Number.isFinite(v));
+      const min = finiteLimit(item.min);
+      const max = finiteLimit(item.max);
       if (
-        !ok ||
-        (item.min !== undefined && v < item.min) ||
-        (item.max !== undefined && v > item.max)
+        typeof v !== "number" ||
+        !(isInt ? Number.isInteger(v) : Number.isFinite(v)) ||
+        (min !== undefined && v < min) ||
+        (max !== undefined && v > max)
       ) {
         return { error: `${isInt ? "integer" : "number"}${range(item)}` };
       }
@@ -92,20 +111,14 @@ function checkItem(item: SchemaItem, v: unknown): SettingCheck {
       return typeof v === "boolean" ? { value: v } : { error: "boolean" };
     case "str": {
       if (typeof v !== "string") return { error: "string" };
-      if (item.len !== undefined && v.length !== item.len) {
-        return { error: `${item.len} characters` };
+      const len = finiteLimit(item.len);
+      const maxLen = finiteLimit(item.max_len);
+      if (len !== undefined && v.length !== len) return { error: `${len} characters` };
+      if (maxLen !== undefined && v.length > maxLen) {
+        return { error: `at most ${maxLen} characters` };
       }
-      if (item.max_len !== undefined && v.length > item.max_len) {
-        return { error: `at most ${item.max_len} characters` };
-      }
-      if (item.pattern !== undefined) {
-        let re: RegExp | undefined;
-        try {
-          re = new RegExp(item.pattern);
-        } catch {
-          re = undefined; // a pattern is only a guide (§9.2)
-        }
-        if (re && !re.test(v)) return { error: `must match ${item.pattern}` };
+      if (trusted && typeof item.pattern === "string" && !new RegExp(item.pattern).test(v)) {
+        return { error: `must match ${item.pattern}` };
       }
       return { value: v };
     }
@@ -113,8 +126,9 @@ function checkItem(item: SchemaItem, v: unknown): SettingCheck {
       if (!Array.isArray(v) || !v.every((e) => typeof e === "string")) {
         return { error: "list of strings" };
       }
-      if (item.max_items !== undefined && v.length > item.max_items) {
-        return { error: `at most ${item.max_items} entries` };
+      const maxItems = finiteLimit(item.max_items);
+      if (maxItems !== undefined && v.length > maxItems) {
+        return { error: `at most ${maxItems} entries` };
       }
       return { value: [...(v as string[])] };
     }
@@ -137,11 +151,11 @@ export function validateSetting(
   const known = KNOWN_BY_KEY.get(key);
   if (!known) {
     const item = schema.find((i) => i.key === key);
-    return item ? checkItem(item, v) : { error: "unknown item" };
+    return item ? checkItem(item, v, false) : { error: "unknown item" };
   }
   switch (key) {
     case "callsign": {
-      const r = checkItem(known, v);
+      const r = checkItem(known, v, true);
       if ("error" in r) return { error: "3-6 chars A-Z 0-9 with a digit, or null" };
       if (typeof r.value === "string" && !/\d/.test(r.value)) {
         return { error: "3-6 chars A-Z 0-9 with a digit, or null" };
@@ -149,7 +163,7 @@ export function validateSetting(
       return r;
     }
     case "symbol": {
-      const r = checkItem(known, v);
+      const r = checkItem(known, v, true);
       const s = "value" in r ? r.value : undefined;
       if (
         typeof s === "string" &&
@@ -162,23 +176,25 @@ export function validateSetting(
       return { error: "2 chars: table (/ \\ 0-9 A-Z) + code (! to ~)" };
     }
     case "path": {
-      const r = checkItem(known, v);
+      const r = checkItem(known, v, true);
       if ("error" in r) return { error: "list of 0-2 strings" };
-      const up = (r.value as string[]).map((e) => e.toUpperCase());
-      if (!up.every((e) => /^[A-Z0-9]{1,6}(-([0-9]|1[0-5]))?$/.test(e))) {
+      // Check the ASCII letters and digits first: toUpperCase() turns "ß" into "SS", "ﬁ" into
+      // "FI" and a dotless "ı" into "I", which would make a non-ASCII entry look valid.
+      const entries = r.value as string[];
+      if (!entries.every((e) => /^[A-Za-z0-9]{1,6}(-([0-9]|1[0-5]))?$/.test(e))) {
         return { error: "entries like WIDE1-1" };
       }
-      return { value: up };
+      return { value: entries.map((e) => e.toUpperCase()) };
     }
     case "comment": {
-      const r = checkItem(known, v);
+      const r = checkItem(known, v, true);
       if ("error" in r || !/^[\x20-\x7e]*$/.test(r.value as string)) {
         return { error: "printable ASCII, 0-40 chars" };
       }
       return r;
     }
     default:
-      return checkItem(known, v);
+      return checkItem(known, v, true);
   }
 }
 
@@ -201,7 +217,7 @@ export function normalizeSettings(
   if (typeof values !== "object" || values === null || Array.isArray(values)) {
     return { key: "values", error: "object required" };
   }
-  const out: SettingsValues = {};
+  const out: SettingsValues = Object.create(null) as SettingsValues; // a key such as "__proto__" stays data
   for (const [key, v] of Object.entries(values)) {
     if (v === undefined) continue;
     const r = validateSetting(key, v, schema);

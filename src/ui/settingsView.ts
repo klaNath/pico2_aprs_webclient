@@ -1,64 +1,60 @@
 // The Settings tab: the device's settings (built from `settings.schema`), then the settings of
 // this app, then About.
 //
-// Transmit safety (CLAUDE.md): nothing is sent until Save is pressed. A change of callsign or
-// turning tx_enabled on is confirmed in a dialog first (executeSave), and Reset to defaults is
-// confirmed in a danger dialog. Nothing is sent on a keystroke.
+// This file only draws. What is edited, saved and reset (and every confirmation dialog) is in
+// settingsController.ts / settingsForm.ts, which have no DOM and are tested in node: the buttons
+// here call `controller.save()` and `controller.reset()` and nothing else can send to the device.
+//
+// Transmit safety (CLAUDE.md): nothing is sent until Save is pressed. A change of callsign or SSID
+// or turning tx_enabled on is confirmed in a dialog first (executeSave), and Reset to defaults is
+// confirmed in a danger dialog (executeReset). Nothing is sent on a keystroke.
+//
+// While the app is not connected the device's form is read-only (and shown only when there are
+// values to show); App preferences and About keep working.
 //
 // Rendering: the form is built once per connection (and again only when the schema changes).
 // `render()` only updates what it must, and a field is never overwritten while the user is
-// editing it, so the status that arrives every 5 seconds cannot erase typed text.
+// editing it, so the status that arrives every 5 seconds cannot erase typed text. The schema comes
+// from the device and is not trusted: one item that cannot be drawn becomes a "Cannot show this
+// item" row and the rest of the screen works.
 
 import "./settings.css";
-import type { DeviceClient } from "../client/deviceClient.ts";
 import { PROTO_VERSION } from "../protocol/types.ts";
-import type { SchemaItem, SettingsValues } from "../protocol/types.ts";
+import type { SchemaItem } from "../protocol/types.ts";
 import { LOG_LIMIT_MAX, LOG_LIMIT_MIN } from "../store/prefs.ts";
 import type { Theme } from "../store/prefs.ts";
 import type { App } from "../store/state.ts";
 import { confirmDialog } from "./dialog.ts";
 import { h, setChildren, setText } from "./dom.ts";
-import {
-  describeError,
-  deviceChangedKeys,
-  evaluateForm,
-  executeSave,
-  fullCall,
-  groupItems,
-  resetConfirmation,
-  savedMessage,
-  setDraft,
-} from "./settingsForm.ts";
-import type { Draft } from "./settingsForm.ts";
+import { SettingsController } from "./settingsController.ts";
+import type { FormModel, Slot } from "./settingsController.ts";
+import { getOwn, groupItems, hasOwn } from "./settingsForm.ts";
 import type { View } from "./view.ts";
 import { createField } from "./widgets/field.ts";
 import type { FieldWidget } from "./widgets/types.ts";
 
-interface Message {
-  level: "ok" | "error" | "info";
-  text: string;
-  /** Date.now() after which the message is hidden. */
-  until?: number;
+/** A row for an item that could not be drawn (a broken schema item from the device). */
+function brokenRow(item: SchemaItem): HTMLElement {
+  return h(
+    "div",
+    { class: "field sf-field sf-broken" },
+    h("code", { class: "sf-key", text: String(item.key) }),
+    h("div", { class: "muted", text: "Cannot show this item" }),
+  );
 }
-
-const SAVED_MS = 8000;
-
-type Slot = "device" | "reset";
 
 export function createSettingsView(app: App): View {
   // ---- state ---------------------------------------------------------------------------
-  let draft: Draft = {};
-  /** Messages from the device about one item ("invalid"), cleared when that item is edited. */
-  let serverErrors: Record<string, string> = {};
-  /** Edited items whose device value changed meanwhile. */
-  const deviceChanged = new Set<string>();
-  let prevCurrent: SettingsValues = {};
-  let busy = false;
-  const messages: Record<Slot, Message | undefined> = { device: undefined, reset: undefined };
-  let forceNext = false;
-  let builtClient: DeviceClient | undefined;
   let builtSchema: SchemaItem[] | undefined;
+  let builtClient: unknown;
   let fields = new Map<string, FieldWidget>();
+  /** Items whose widget failed to update: they are shown as "Cannot show this item". */
+  const broken = new Set<string>();
+  const controller = new SettingsController({
+    host: app,
+    confirm: confirmDialog,
+    onChange: () => view.render(),
+  });
 
   // ---- elements ------------------------------------------------------------------------
   // Messages sit next to the buttons that cause them: the Save bar stays on screen while the form
@@ -66,13 +62,19 @@ export function createSettingsView(app: App): View {
   const deviceMsg = h("p", { class: "sf-msg", hidden: true });
   const resetMsg = h("p", { class: "sf-msg", hidden: true });
 
+  const readOnlyBanner = h("p", {
+    class: "sf-readonly-banner",
+    text: "Read-only: not connected",
+    attrs: { role: "status" },
+    hidden: true,
+  });
   const guide = h("p", { class: "muted" });
   const unknownText = h("p");
   const unknownReload = h("button", {
     class: "btn",
     text: "Reload from device",
     attrs: { type: "button" },
-    on: { click: () => void reload() },
+    on: { click: () => void controller.reload() },
   });
   const unknownBox = h("div", { class: "sf-warn", hidden: true }, unknownText, unknownReload);
   const groups = h("div", { class: "sf-device" });
@@ -82,19 +84,19 @@ export function createSettingsView(app: App): View {
     class: "btn btn-primary",
     text: "Save",
     attrs: { type: "button" },
-    on: { click: () => void save() },
+    on: { click: () => void controller.save() },
   });
   const revertBtn = h("button", {
     class: "btn",
     text: "Revert",
     attrs: { type: "button" },
-    on: { click: revert },
+    on: { click: () => controller.revert() },
   });
   const reloadBtn = h("button", {
     class: "btn",
     text: "Reload from device",
     attrs: { type: "button" },
-    on: { click: () => void reload() },
+    on: { click: () => void controller.reload() },
   });
   const buttons = h("div", { class: "row" }, saveBtn, revertBtn, reloadBtn);
   const actions = h("div", { class: "sf-actions" }, deviceMsg, summary, buttons);
@@ -105,7 +107,12 @@ export function createSettingsView(app: App): View {
     class: "btn btn-danger",
     text: "Reset to defaults",
     attrs: { type: "button" },
-    on: { click: () => void reset() },
+    on: { click: () => void controller.reset() },
+  });
+  const resetNote = h("p", {
+    class: "muted",
+    text: "Read-only: not connected. Reset is available while connected to a tracker.",
+    hidden: true,
   });
   const resetCard = h(
     "div",
@@ -116,6 +123,7 @@ export function createSettingsView(app: App): View {
       text: "Delete all saved settings on the device and go back to the defaults written in its firmware. This can change the callsign and the transmit permission.",
     }),
     h("div", { class: "row" }, resetBtn),
+    resetNote,
     resetMsg,
   );
 
@@ -201,6 +209,7 @@ export function createSettingsView(app: App): View {
       "div",
       { class: "card sf-card" },
       h("h2", { text: "Device settings" }),
+      readOnlyBanner,
       h("p", {
         class: "muted",
         text: "Edit the values, then press Save. Nothing is sent to the tracker until you do.",
@@ -212,179 +221,38 @@ export function createSettingsView(app: App): View {
     aboutCard,
   );
 
-  // ---- actions -------------------------------------------------------------------------
-
-  function setMessage(m: Message | undefined, slot: Slot = "device"): void {
-    messages[slot] = m;
-  }
-
-  function setBusy(b: boolean): void {
-    busy = b;
-    view.render();
-  }
-
-  function onEdit(key: string, value: unknown): void {
-    const client = app.client;
-    if (!client || busy) return;
-    draft = setDraft(draft, client.settings, key, value);
-    delete serverErrors[key];
-    if (!(key in draft)) deviceChanged.delete(key);
-    setMessage(undefined);
-    view.render();
-  }
-
-  function clearEdits(): void {
-    draft = {};
-    serverErrors = {};
-    deviceChanged.clear();
-    forceNext = true;
-  }
-
-  function revert(): void {
-    if (busy) return;
-    clearEdits();
-    setMessage({
-      level: "info",
-      text: "Reverted to the values on the device.",
-      until: Date.now() + 4000,
-    });
-    view.render();
-  }
-
-  /** Show an error from the client: under the item it names, or at the top. */
-  function showError(e: unknown, slot: Slot = "device"): void {
-    const d = describeError(e);
-    if (d.key && fields.has(d.key) && slot === "device") {
-      serverErrors[d.key] = d.text;
-      setMessage({ level: "error", text: "Not saved. Check the highlighted item." });
-    } else {
-      setMessage({ level: "error", text: d.text }, slot);
-    }
-  }
-
-  async function save(): Promise<void> {
-    const client = app.client;
-    if (!client || busy || client.state !== "ready" || !client.settingsKnown) return;
-    const ev = evaluateForm(client.schema, client.settings, draft);
-    if (!ev.canSave) return;
-    setMessage(undefined);
-    setBusy(true);
-    try {
-      const out = await executeSave(client, ev.changes, confirmDialog);
-      switch (out.kind) {
-        case "saved":
-          clearEdits();
-          setMessage({
-            level: "ok",
-            text: savedMessage(out.result.changed, client.schema),
-            until: Date.now() + SAVED_MS,
-          });
-          break;
-        case "cancelled":
-          setMessage({ level: "info", text: "Cancelled. Nothing was sent to the device." });
-          break;
-        case "stale":
-          setMessage({
-            level: "error",
-            text: "The device's settings changed while you were confirming. Nothing was sent. Check the form and press Save again.",
-          });
-          break;
-      }
-    } catch (e) {
-      showError(e);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function reload(): Promise<void> {
-    const client = app.client;
-    if (!client || busy || client.state !== "ready") return;
-    setMessage(undefined);
-    serverErrors = {};
-    setBusy(true);
-    try {
-      await client.getSettings();
-      forceNext = Object.keys(draft).length === 0;
-      setMessage({
-        level: "info",
-        text: "Loaded the settings from the device.",
-        until: Date.now() + 4000,
-      });
-    } catch (e) {
-      showError(e);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function reset(): Promise<void> {
-    const client = app.client;
-    if (!client || busy || client.state !== "ready") return;
-    const ev = evaluateForm(client.schema, client.settings, draft);
-    setMessage(undefined, "reset");
-    setBusy(true);
-    try {
-      const ok = await confirmDialog(
-        resetConfirmation(client.settings, client.settingsKnown, ev.dirty.length > 0),
-      );
-      if (!ok) {
-        setMessage({ level: "info", text: "Cancelled. Nothing was changed." }, "reset");
-        return;
-      }
-      const res = await client.resetSettings({ confirmed: true });
-      clearEdits();
-      const call = fullCall(res.values.callsign, res.values.ssid);
-      const tx = res.values.tx_enabled === true;
-      setMessage(
-        {
-          level: tx ? "error" : "ok",
-          text: `Reset to defaults. Callsign: ${call ?? "not set"}. Transmit is ${tx ? "ENABLED" : "disabled"} (the beacon switch must still be on).`,
-          until: Date.now() + SAVED_MS * 2,
-        },
-        "reset",
-      );
-    } catch (e) {
-      showError(e, "reset");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   // ---- building and updating ---------------------------------------------------------------
 
   /** Build the form again when the connection or its schema is not the one built for. */
-  function ensureBuilt(client: DeviceClient | undefined): void {
+  function ensureBuilt(): void {
+    const client = app.client;
     const schema = client?.schema;
     if (client === builtClient && schema === builtSchema) return;
-    if (client !== builtClient) {
-      draft = {};
-      serverErrors = {};
-      deviceChanged.clear();
-      prevCurrent = structuredClone(client?.settings ?? {});
-      setMessage(undefined);
-      setMessage(undefined, "reset");
-    }
     builtClient = client;
     builtSchema = schema;
     fields = new Map();
+    broken.clear();
     const parts: Node[] = [];
     for (const g of groupItems(schema ?? [])) {
       const card = h("div", { class: "card sf-card" }, h("h3", { text: g.title }));
       for (const item of g.items) {
-        const f = createField(item, onEdit);
-        fields.set(item.key, f);
-        card.append(f.el);
+        try {
+          const f = createField(item, (key, value) => controller.edit(key, value));
+          fields.set(item.key, f);
+          card.append(f.el);
+        } catch (e) {
+          console.error("settings: cannot draw item", item.key, e);
+          card.append(brokenRow(item));
+        }
       }
       parts.push(card);
     }
     setChildren(groups, ...parts);
-    forceNext = true;
+    controller.forceRewrite();
   }
 
   function renderMessage(el: HTMLElement, slot: Slot): void {
-    const m = messages[slot];
-    const live = m && (m.until === undefined || Date.now() < m.until) ? m : undefined;
+    const live = controller.message(slot);
     el.hidden = !live;
     if (!live) return;
     el.className = `sf-msg sf-msg-${live.level}`;
@@ -397,78 +265,78 @@ export function createSettingsView(app: App): View {
     renderMessage(resetMsg, "reset");
   }
 
-  function renderDevice(): void {
-    const client = app.client;
-    ensureBuilt(client);
-    const connected = client?.state === "ready";
-    const schema = client?.schema ?? [];
-    const hasForm = connected && schema.length > 0;
-    const current = client?.settings ?? {};
-    const known = client?.settingsKnown ?? false;
+  function summaryText(m: FormModel, errs: number): string {
+    if (m.readOnly) return "Read-only: not connected.";
+    if (m.busy) return "Talking to the device…";
+    if (!m.known) return "Reload from the device before saving.";
+    if (errs > 0) return "Fix the highlighted items to save.";
+    const n = m.ev.dirty.length;
+    if (n === 0) return "No changes.";
+    const also = m.deviceChanged.size > 0 ? " (some items also changed on the device)" : "";
+    return `${n} unsaved change${n === 1 ? "" : "s"}${also}.`;
+  }
 
+  function renderDevice(): void {
+    ensureBuilt();
+    const m = controller.refresh();
+    const hasForm = m.hasForm;
+
+    readOnlyBanner.hidden = m.ready;
+    resetNote.hidden = m.ready;
     guide.hidden = hasForm;
-    if (!client || !connected)
+    if (!m.ready) {
       setText(guide, "Not connected. Connect to a tracker to see its settings.");
-    else if (schema.length === 0) {
+    } else if (m.schema.length === 0) {
       setText(guide, "The device did not send a list of settings, so there is nothing to edit.");
     }
     groups.hidden = !hasForm;
     summary.hidden = !hasForm;
     buttons.hidden = !hasForm;
     actions.hidden = !hasForm && deviceMsg.hidden;
-    resetBtn.disabled = !connected || busy;
-    unknownBox.hidden = !(connected && !known);
-    if (connected && !known) {
+    resetBtn.disabled = !m.canReset;
+    unknownBox.hidden = !(m.ready && !m.known);
+    if (m.ready && !m.known) {
       setText(
         unknownText,
         "The settings on the device are not known right now (a save may not have finished). Reload them before saving.",
       );
     }
-    unknownReload.disabled = busy;
+    unknownReload.disabled = !m.canReload;
     if (!hasForm) return;
 
-    // Edited items that the device has changed under the user: keep the edit, say so.
-    for (const k of deviceChangedKeys(prevCurrent, current, draft)) deviceChanged.add(k);
-    prevCurrent = structuredClone(current);
-
-    const ev = evaluateForm(schema, current, draft);
-    const force = forceNext;
-    forceNext = false;
-    const locked = busy;
-    for (const item of schema) {
-      const f = fields.get(item.key);
-      if (!f) continue;
-      const edited = item.key in draft;
-      f.update(
-        {
-          value: edited ? draft[item.key] : current[item.key],
-          error: edited ? (ev.errors[item.key] ?? serverErrors[item.key]) : undefined,
-          dirty: ev.dirty.includes(item.key),
-          disabled: locked,
-          changedOnDevice: edited && deviceChanged.has(item.key),
-        },
-        force,
-      );
+    const force = controller.consumeForce();
+    const locked = m.busy || m.readOnly;
+    for (const item of m.schema) {
+      const key = item.key;
+      const f = fields.get(key);
+      if (!f || broken.has(key)) continue;
+      const edited = hasOwn(m.draft, key);
+      try {
+        f.update(
+          {
+            value: edited ? m.draft[key] : getOwn(m.current, key),
+            // An error from the device is shown even for an item that is not being edited.
+            error: getOwn(m.ev.errors, key) ?? m.serverErrors.get(key),
+            dirty: m.ev.dirty.includes(key),
+            disabled: locked,
+            changedOnDevice: edited && m.deviceChanged.has(key),
+          },
+          force,
+        );
+      } catch (e) {
+        console.error("settings: cannot update item", key, e);
+        broken.add(key);
+        f.el.replaceChildren(brokenRow(item));
+      }
     }
 
-    const n = ev.dirty.length;
-    const errs = Object.keys(ev.errors).length + Object.keys(serverErrors).length;
-    saveBtn.disabled = busy || !ev.canSave || !known || Object.keys(serverErrors).length > 0;
-    revertBtn.disabled = busy || Object.keys(draft).length === 0;
-    reloadBtn.disabled = busy;
-    saveBtn.textContent = busy ? "Saving…" : "Save";
-    setText(
-      summary,
-      busy
-        ? "Talking to the device…"
-        : !known
-          ? "Reload from the device before saving."
-          : errs > 0
-            ? "Fix the highlighted items to save."
-            : n > 0
-              ? `${n} unsaved change${n === 1 ? "" : "s"}${deviceChanged.size > 0 ? " (some items also changed on the device)" : ""}.`
-              : "No changes.",
-    );
+    const blocking = [...m.serverErrors.keys()].filter((k) => hasOwn(m.draft, k)).length;
+    const errs = Object.keys(m.ev.errors).length + blocking;
+    saveBtn.disabled = !m.canSave;
+    revertBtn.disabled = !m.canRevert;
+    reloadBtn.disabled = !m.canReload;
+    saveBtn.textContent = m.busy ? "Saving…" : "Save";
+    setText(summary, summaryText(m, errs));
   }
 
   function renderAbout(): void {
@@ -504,10 +372,15 @@ export function createSettingsView(app: App): View {
   const view: View = {
     el,
     render(): void {
-      renderMessages();
-      renderDevice();
-      renderPrefs();
-      renderAbout();
+      controller.sync(); // a new connection drops old messages before they are drawn
+      // Each part on its own: a failure in the device's form must not take the preferences down.
+      for (const part of [renderMessages, renderDevice, renderPrefs, renderAbout]) {
+        try {
+          part();
+        } catch (e) {
+          console.error("settings: drawing failed", e);
+        }
+      }
     },
   };
   return view;

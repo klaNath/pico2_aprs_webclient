@@ -1,6 +1,7 @@
 // A list of strings with Add and Remove (list items). `path` is the same widget with a hint.
 // Blank rows are not part of the value: a new empty row is only a place to type.
 
+import { finiteLimit } from "../../protocol/settings.ts";
 import { h, setText } from "../dom.ts";
 import type { SchemaItem } from "../../protocol/types.ts";
 import type { Control, OnValue } from "./types.ts";
@@ -27,7 +28,7 @@ export function createListControl(
       .filter((v) => v.trim() !== "");
   const refresh = (): void => {
     const n = inputs().length;
-    const max = item.max_items;
+    const max = finiteLimit(item.max_items);
     add.disabled = disabled || (max !== undefined && n >= max);
     setText(count, max !== undefined ? `${n}/${max}` : `${n}`);
   };

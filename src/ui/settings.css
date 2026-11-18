@@ -60,6 +60,20 @@
   font-weight: 600;
 }
 
+.sf-readonly-banner {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-radius: var(--radius);
+  padding: 8px var(--gutter);
+  margin: 0 0 8px;
+  font-weight: 600;
+}
+
+/* An item that could not be drawn. */
+.sf-broken {
+  color: var(--muted);
+}
+
 /* ---- one item ---------------------------------------------------------------------------- */
 
 .sf-field {

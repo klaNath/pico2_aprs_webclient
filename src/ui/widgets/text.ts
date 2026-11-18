@@ -1,5 +1,6 @@
 // Text input (str items): comment, callsign, and unknown string items.
 
+import { finiteLimit } from "../../protocol/settings.ts";
 import { h } from "../dom.ts";
 import type { SchemaItem } from "../../protocol/types.ts";
 import type { Control, OnValue } from "./types.ts";
@@ -25,7 +26,7 @@ export function createTextControl(
   };
   if (opts.placeholder) attrs.placeholder = opts.placeholder;
   const input = h("input", { id, class: opts.code ? "sf-input mono" : "sf-input", attrs });
-  const max = item.len ?? item.max_len;
+  const max = finiteLimit(item.len) ?? finiteLimit(item.max_len);
   const counter = max !== undefined ? h("span", { class: "sf-counter muted" }) : null;
   const showCount = (): void => {
     if (!counter || max === undefined) return;

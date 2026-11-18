@@ -3,7 +3,7 @@
 // widgetKindFor) and returns a FieldWidget that the settings view updates in place.
 
 import { h, setText } from "../dom.ts";
-import { fieldLabel, fieldUnit, widgetKindFor } from "../settingsForm.ts";
+import { fieldLabel, fieldUnit, getOwn, itemDesc, widgetKindFor } from "../settingsForm.ts";
 import { settingEquals } from "../../protocol/settings.ts";
 import type { SchemaItem } from "../../protocol/types.ts";
 import { createListControl } from "./list.ts";
@@ -81,7 +81,7 @@ export function createField(
   });
   const devNote = h("span", { class: "sf-devnote", text: "Changed on the device", hidden: true });
   const unset =
-    item.nullable && kind !== "readonly"
+    item.nullable === true && kind !== "readonly"
       ? h("input", { attrs: { type: "checkbox", id: `${id}-unset` } })
       : null;
   unset?.addEventListener("change", () => {
@@ -92,11 +92,18 @@ export function createField(
       control.focus();
     }
   });
-  const desc =
-    item.desc && item.desc.toLowerCase() !== fieldLabel(item).toLowerCase() ? item.desc : "";
+  // Everything from the device's schema is checked before use: `desc` may not be a string, and
+  // `pattern` is never run, only shown (a regular expression from the device could hang the page).
+  const rawDesc = itemDesc(item);
+  const desc = rawDesc && rawDesc.toLowerCase() !== fieldLabel(item).toLowerCase() ? rawDesc : "";
+  const pattern =
+    kind === "text" && typeof item.pattern === "string" && item.pattern !== ""
+      ? `Expected format (from the device): ${item.pattern.slice(0, 80)}${item.pattern.length > 80 ? "…" : ""}`
+      : "";
   const hints = [
     desc,
-    HINTS[key] ?? "",
+    getOwn(HINTS, key) ?? "",
+    pattern,
     kind === "readonly" ? "This app does not know this type, so it cannot be edited here." : "",
   ].filter((t) => t !== "");
   const hint = h(
@@ -111,7 +118,12 @@ export function createField(
     h("div", { class: "sf-head" }, labelEl, keyText, devNote),
     control.el,
     unset
-      ? h("label", { class: "sf-unset" }, unset, h("span", { text: UNSET_TEXT[key] ?? "Not set" }))
+      ? h(
+          "label",
+          { class: "sf-unset" },
+          unset,
+          h("span", { text: getOwn(UNSET_TEXT, key) ?? "Not set" }),
+        )
       : null,
     hint,
     error,

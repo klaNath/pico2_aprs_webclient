@@ -16,10 +16,19 @@ export interface ConfirmOptions {
   facts?: string[];
 }
 
-export function confirmDialog(opts: ConfirmOptions): Promise<boolean> {
+let dialogCount = 0;
+
+/**
+ * Show the dialog. With `signal`, aborting it (for example when the connection is lost) closes the
+ * dialog and resolves false; a signal that is already aborted resolves false without showing it.
+ */
+export function confirmDialog(opts: ConfirmOptions, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return Promise.resolve(false);
   return new Promise((resolve) => {
     let result = false;
-    const dlg = h("dialog", { class: "dialog", attrs: { "aria-labelledby": "dlg-title" } });
+    // One id per dialog: two dialogs on the page at once must not share the title id.
+    const titleId = `dlg-title-${++dialogCount}`;
+    const dlg = h("dialog", { class: "dialog", attrs: { "aria-labelledby": titleId } });
     const cancel = h("button", {
       class: "btn",
       text: opts.cancelLabel ?? "Cancel",
@@ -38,14 +47,23 @@ export function confirmDialog(opts: ConfirmOptions): Promise<boolean> {
       },
     });
     append(dlg, [
-      h("h2", { id: "dlg-title", text: opts.title }),
+      h("h2", { id: titleId, text: opts.title }),
       ...opts.body.map((p) => h("p", { text: p })),
       opts.facts && opts.facts.length > 0
         ? h("div", { class: "dialog-facts" }, ...opts.facts.map((f) => h("div", { text: f })))
         : null,
       h("div", { class: "dialog-actions" }, cancel, ok),
     ]);
+    const onAbort = (): void => {
+      result = false;
+      if (dlg.open) dlg.close();
+      // The "close" event comes later; do not leave the dialog on screen until then.
+      dlg.remove();
+      resolve(false);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
     dlg.addEventListener("close", () => {
+      signal?.removeEventListener("abort", onAbort);
       dlg.remove();
       resolve(result);
     });
