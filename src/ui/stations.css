@@ -1,0 +1,88 @@
+/* Stations tab. Colors come from the tokens in style.css. */
+
+.st-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.st-controls .field {
+  margin: 0;
+  flex: 1 1 140px;
+  min-width: 0;
+}
+
+.st-summary {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.st-list .list-item {
+  padding: 0;
+  overflow: hidden;
+}
+
+.st-main {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.st-top {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.st-call {
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+.st-own {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.st-age {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.st-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.9rem;
+}
+
+.st-sym {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.st-detail {
+  padding: 4px 12px 10px;
+  border-top: 1px solid var(--border);
+}
+
+.st-detail .kv {
+  margin: 8px 0 0;
+}
