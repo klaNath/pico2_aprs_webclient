@@ -1,0 +1,300 @@
+/* Settings tab. Uses the tokens and shared classes of style.css (.card .field .hint .error .btn). */
+
+.sf-device {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sf-card h2 {
+  margin-bottom: 4px;
+}
+
+.sf-card h3 {
+  font-size: 1rem;
+  margin: 0 0 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.sf-msg {
+  border-radius: var(--radius);
+  padding: 10px var(--gutter);
+  border: 1px solid var(--border);
+  margin: 0;
+}
+
+.sf-msg-error {
+  border-color: var(--danger);
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.sf-msg-ok {
+  background: var(--ok-bg);
+  color: var(--ok);
+  border-color: var(--ok);
+  font-weight: 600;
+}
+
+.sf-msg-info {
+  background: var(--unknown-bg);
+  color: var(--text);
+}
+
+.sf-warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-radius: var(--radius);
+  padding: 10px var(--gutter);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.sf-warn p {
+  margin: 0;
+  flex: 1 1 14rem;
+  font-weight: 600;
+}
+
+/* ---- one item ---------------------------------------------------------------------------- */
+
+.sf-field {
+  border-left: 3px solid transparent;
+  padding-left: 10px;
+  margin-left: -13px;
+}
+
+.sf-field:last-child {
+  margin-bottom: 0;
+}
+
+.sf-dirty {
+  border-left-color: var(--accent);
+}
+
+.sf-invalid {
+  border-left-color: var(--danger);
+}
+
+.sf-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+}
+
+.sf-key {
+  font-size: 0.75rem;
+}
+
+.sf-devnote {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-radius: 999px;
+  padding: 0 8px;
+}
+
+.sf-text,
+.sf-number,
+.sf-select {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sf-text .sf-input,
+.sf-number .sf-input,
+.sf-select .sf-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sf-number .sf-input {
+  max-width: 10rem;
+}
+
+.sf-unit {
+  min-width: 1.2rem;
+}
+
+.sf-human {
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.sf-counter {
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.sf-over {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.sf-unset {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+}
+
+.sf-unset input {
+  width: 20px;
+  height: 20px;
+  min-height: 0;
+}
+
+.sf-symbol {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.sf-symbol .sf-input {
+  min-width: 0;
+}
+
+.sf-symname {
+  grid-column: 1 / -1;
+  font-weight: 600;
+}
+
+.sf-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.sf-list:empty {
+  display: none;
+}
+
+.sf-list-row {
+  display: flex;
+  gap: 8px;
+}
+
+.sf-list-row .sf-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sf-list-actions {
+  align-items: center;
+}
+
+.sf-readonly {
+  display: block;
+  padding: 6px 10px;
+  background: var(--unknown-bg);
+  border-radius: var(--radius);
+}
+
+/* ---- switch ------------------------------------------------------------------------------ */
+
+.sf-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.sf-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  min-height: 0;
+}
+
+.sf-switch-track {
+  position: relative;
+  width: 48px;
+  height: 28px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--unknown);
+  transition: background 0.15s;
+}
+
+.sf-switch-track::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--surface);
+  transition: transform 0.15s;
+}
+
+.sf-switch input:checked + .sf-switch-track {
+  background: var(--accent);
+}
+
+.sf-switch input:checked + .sf-switch-track::after {
+  transform: translateX(20px);
+}
+
+.sf-switch input:focus-visible + .sf-switch-track {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.sf-switch input:disabled + .sf-switch-track {
+  opacity: 0.5;
+}
+
+/* ---- action bar -------------------------------------------------------------------------- */
+
+.sf-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px var(--gutter);
+  box-shadow: 0 -4px 12px rgb(0 0 0 / 0.12);
+}
+
+.sf-summary {
+  font-size: 0.9rem;
+}
+
+.sf-actions .btn {
+  flex: 1 1 auto;
+}
+
+/* ---- reset, preferences, about ------------------------------------------------------------ */
+
+.sf-danger {
+  border-color: var(--danger);
+}
+
+.sf-danger h2 {
+  color: var(--danger);
+}
+
+.sf-pref {
+  margin-bottom: 12px;
+}
+
+.sf-about .kv {
+  margin-bottom: 8px;
+}
