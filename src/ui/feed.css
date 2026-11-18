@@ -1,0 +1,191 @@
+/* Feed tab. Colors come from the tokens in style.css, so light and dark both work. */
+
+.feed-filters {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.feed-filters .field {
+  margin-bottom: 0;
+  min-width: 0;
+}
+
+.feed-filters .field-wide {
+  grid-column: 1 / -1;
+}
+
+.feed-actions {
+  margin-top: 12px;
+  flex-wrap: nowrap;
+}
+
+.feed-actions .btn {
+  flex: 1 1 auto;
+  padding: 0 8px;
+  font-size: 0.9rem;
+}
+
+.feed-count {
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.feed-empty {
+  text-align: center;
+  padding: 24px var(--gutter);
+}
+
+.feed-item.list-item {
+  padding: 0;
+  overflow: hidden;
+}
+
+.feed-open.list-item {
+  border-color: var(--accent);
+}
+
+.feed-head {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.feed-line1 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+}
+
+.feed-time {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.feed-dir {
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+
+.feed-dir-rx {
+  background: var(--ok-bg);
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.feed-dir-tx {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.feed-dir-dry {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.feed-src {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.feed-meta {
+  margin-left: auto;
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.feed-clip {
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--danger);
+  color: var(--danger-text);
+}
+
+.feed-line2 {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.feed-kind {
+  flex: none;
+  font-size: 0.75rem;
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: var(--unknown-bg);
+  color: var(--unknown);
+}
+
+.feed-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+.feed-open .feed-summary {
+  display: block;
+  overflow: visible;
+}
+
+.feed-detail {
+  border-top: 1px solid var(--border);
+  padding: 8px 12px 12px;
+}
+
+.feed-raw {
+  margin: 0 0 10px;
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--bg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.feed-detail .kv {
+  grid-template-columns: minmax(84px, 38%) 1fr;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 0.9rem;
+  user-select: text;
+}
+
+.feed-detail .kv dt {
+  overflow-wrap: anywhere;
+}
+
+.feed-detail .problem {
+  margin: 0 0 10px;
+  overflow-wrap: anywhere;
+}
+
+.feed-new {
+  position: sticky;
+  bottom: 12px;
+  align-self: center;
+  z-index: 4;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.35);
+}
