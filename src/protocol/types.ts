@@ -56,7 +56,10 @@ export interface StatusMsg {
 export interface RxMsg {
   t: "rx";
   tnc2: string;
+  /** The sending station (the inner sender for third-party traffic), §8.2. */
   src?: string;
+  /** Object or item name; only when `kind` is "object" or "item" (§8.2). */
+  obj?: string;
   kind?: string;
   lat?: number;
   lon?: number;
@@ -76,7 +79,10 @@ export interface TxMsg {
 export interface StationMsg {
   t: "station";
   id?: number;
+  /** Station callsign-SSID, or the object/item name when `obj` is true (§8.4). */
   src: string;
+  /** True for an object or item row. */
+  obj?: boolean;
   last_s?: number;
   count?: number;
   lat?: number;

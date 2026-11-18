@@ -342,3 +342,56 @@ describe("latestPacket / detailRows", () => {
     expect(a.at(-1)).toMatchObject({ value: tnc2, mono: true });
   });
 });
+
+describe("objects and items (§8.4)", () => {
+  const objTnc2 = "Q1OBJ>APRS:;Q1SAME   *111111z3500.00N/13500.00E>obj comment";
+  const stTnc2 = "Q1SAME>APRS:!3540.12N/13945.37E>station comment";
+  const feed: FeedItem[] = [
+    {
+      seq: 1,
+      kind: "rx",
+      at: 10,
+      msg: { t: "rx", tnc2: stTnc2, src: "Q1SAME" },
+      parsed: parseAprs(stTnc2),
+    },
+    {
+      seq: 2,
+      kind: "rx",
+      at: 20,
+      msg: { t: "rx", tnc2: objTnc2, src: "Q1OBJ", obj: "Q1SAME", kind: "object" },
+      parsed: parseAprs(objTnc2),
+    },
+  ];
+
+  it("gives an object and a station of one name different keys, and both stay in the list", () => {
+    const items = buildItems(
+      [row("Q1SAME", { lat: 35.7, lon: 139.8 }), row("Q1SAME", { obj: true, lat: 35, lon: 135 })],
+      me,
+    );
+    expect(items.map((i) => [i.key, i.src, i.obj])).toEqual([
+      ["Q1SAME", "Q1SAME", false],
+      ["obj:Q1SAME", "Q1SAME", true],
+    ]);
+    expect(new Set(items.map((i) => i.key)).size).toBe(2);
+  });
+
+  it("finds the latest packet of the object, and of the station without the object's packets", () => {
+    expect(latestPacket(feed, "Q1SAME", true)!.at).toBe(20);
+    expect(latestPacket(feed, "Q1SAME", true)!.comment).toBe("obj comment");
+    expect(latestPacket(feed, "Q1SAME")!.at).toBe(10);
+    expect(latestPacket(feed, "Q1SAME")!.comment).toBe("station comment");
+    // The sender of the object has not sent a station packet.
+    expect(latestPacket(feed, "Q1OBJ")).toBeUndefined();
+  });
+
+  it("names an object in the detail rows and in the spoken text", () => {
+    const [o] = buildItems([row("Q1SAME", { obj: true, lat: 35, lon: 135 })], me);
+    expect(detailRows(o!, undefined, NOW, me)[0]).toMatchObject({
+      label: "Object",
+      value: "Q1SAME",
+    });
+    expect(ariaText(o!)).toMatch(/^object Q1SAME/);
+    const [s] = buildItems([row("Q1SAME")], me);
+    expect(detailRows(s!, undefined, NOW, me)[0]!.label).toBe("Callsign");
+  });
+});

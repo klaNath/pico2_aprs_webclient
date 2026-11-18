@@ -151,7 +151,7 @@ export function createRadarView(app: App): View {
     const title = s("title");
     const g = s(
       "g",
-      { class: "radar-st", "data-src": item.src },
+      { class: "radar-st", "data-src": item.key },
       title,
       s("circle", { class: "radar-sel", r: 10 }),
       mark,
@@ -160,7 +160,7 @@ export function createRadarView(app: App): View {
     g.addEventListener("keydown", (ev) => {
       if (ev.key === "Enter" || ev.key === " ") {
         ev.preventDefault();
-        toggle(item.src);
+        toggle(item.key);
       }
     });
     dotsG.append(g);
@@ -360,7 +360,7 @@ export function createRadarView(app: App): View {
     for (const b of scaleButtons) b.el.setAttribute("aria-pressed", String(b.value === scale));
 
     const all = buildItems(app.stations.values(), me);
-    const known = new Set(all.map((i) => i.src));
+    const known = new Set(all.map((i) => i.key));
     if (selected !== undefined && !known.has(selected)) selected = undefined;
 
     // No fix: nothing to centre the radar on.
@@ -379,17 +379,17 @@ export function createRadarView(app: App): View {
       syncRings(maxM, scale);
       const stops = tabStops(
         [...placeable]
-          .sort((a, b) => (a.distanceM ?? 0) - (b.distanceM ?? 0) || (a.src < b.src ? -1 : 1))
-          .map((i) => i.src),
+          .sort((a, b) => (a.distanceM ?? 0) - (b.distanceM ?? 0) || (a.key < b.key ? -1 : 1))
+          .map((i) => i.key),
         selected,
       );
       const live = new Set<string>();
       for (const item of placeable) {
-        live.add(item.src);
-        let d = dots.get(item.src);
+        live.add(item.key);
+        let d = dots.get(item.key);
         if (!d) {
           d = makeDot(item);
-          dots.set(item.src, d);
+          dots.set(item.key, d);
         }
         // A station at your position has no bearing: it gets a made-up direction, off the centre.
         const p = placeStation(
@@ -430,7 +430,7 @@ export function createRadarView(app: App): View {
           d.label = label;
           setText(d.title, label);
         }
-        const stop = stops.has(item.src);
+        const stop = stops.has(item.key);
         if (stop !== d.stop || (stop && d.g.getAttribute("aria-label") !== label)) {
           d.stop = stop;
           if (stop) {
@@ -447,7 +447,7 @@ export function createRadarView(app: App): View {
             d.g.setAttribute("aria-hidden", "true");
           }
         }
-        const isSel = item.src === selected;
+        const isSel = item.key === selected;
         setClass(d, "out", p.outOfRange);
         setClass(d, "is-selected", isSel);
         if (stop) d.g.setAttribute("aria-pressed", String(isSel));
@@ -486,11 +486,11 @@ export function createRadarView(app: App): View {
     if (svg.getAttribute("aria-label") !== aria) svg.setAttribute("aria-label", aria);
 
     // Details of the selected station.
-    const sel = selected === undefined ? undefined : all.find((i) => i.src === selected);
+    const sel = selected === undefined ? undefined : all.find((i) => i.key === selected);
     detail.hidden = sel === undefined;
     if (sel) {
       setText(detailTitle, sel.src);
-      const latest = latestPacket(app.feed, sel.src);
+      const latest = latestPacket(app.feed, sel.src, sel.obj);
       const rows = detailRows(sel, latest, Date.now(), me);
       if (sel.distanceM !== undefined && sel.distanceM > maxM) {
         rows.splice(3, 0, { label: "Range", value: "Out of range" });

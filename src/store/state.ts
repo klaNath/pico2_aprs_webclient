@@ -30,7 +30,10 @@ export interface FeedItem {
 }
 
 export interface StationRow {
+  /** The callsign-SSID of a station, or the name of an object or item (when `obj`). */
   src: string;
+  /** True for an object or item (§8.4): a row apart from a station with the same name. */
+  obj?: boolean;
   lat?: number;
   lon?: number;
   /** Date.now() of the last time it was heard (derived from `last_s` for the device's list). */
@@ -40,6 +43,14 @@ export interface StationRow {
   /** Symbol as two characters ("/>"), when known. */
   sym?: string;
   own: boolean;
+}
+
+/**
+ * The key of a row in `App.stations`. An object may have the same name as a station (§8.4), so
+ * the two kinds must not share a key. A callsign never contains ":".
+ */
+export function stationKey(src: string, obj?: boolean): string {
+  return obj ? `obj:${src}` : src;
 }
 
 /** Most stations kept (the device keeps 64; see plan.md). */
@@ -437,44 +448,82 @@ export class App {
 
   private onRx(msg: RxMsg): void {
     const item = this.pushFeed("rx", msg);
-    const src = msg.src ?? item.parsed.tnc2?.src;
-    if (src) {
-      const prev = this.stations.get(src);
-      const row: StationRow = {
-        src,
-        lastAt: item.at,
-        count: (prev?.count ?? 0) + 1,
-        own: prev?.own ?? false,
-      };
-      // Only a position report or Mic-E tells where the sender is. Objects, items, third-party
-      // packets and status locators carry somebody else's (or an approximate) position.
-      const ll = senderPosition(msg, item.parsed);
-      const lat = ll ? ll.lat : prev?.lat;
-      const lon = ll ? ll.lon : prev?.lon;
-      if (lat !== undefined && lon !== undefined) {
-        row.lat = lat;
-        row.lon = lon;
-      }
-      const lvl = msg.lvl_db ?? prev?.lvlDb;
-      if (lvl !== undefined) row.lvlDb = lvl;
-      // The symbol goes with the position: an object's symbol is not the sender's.
-      const sym = (ll ? msg.sym : undefined) ?? prev?.sym;
-      if (sym !== undefined) row.sym = sym;
-      this.stations.set(src, row);
-      this.trimStations();
+    const object = objectOf(msg, item.parsed);
+    if (object) {
+      this.updateObject(object, msg, item.at);
+    } else {
+      const src = msg.src ?? item.parsed.tnc2?.src;
+      if (src) this.updateStation(src, msg, item);
     }
     this.notify();
+  }
+
+  /**
+   * An object or item row (§8.4). The sender gets no row for it: a station that only sent objects
+   * has none. The position and the symbol are the object's own.
+   */
+  private updateObject(object: ObjectInfo, msg: RxMsg, at: number): void {
+    const key = stationKey(object.name, true);
+    const prev = this.stations.get(key);
+    const row: StationRow = {
+      src: object.name,
+      obj: true,
+      lastAt: at,
+      count: (prev?.count ?? 0) + 1,
+      own: false,
+    };
+    const lat = object.lat ?? prev?.lat;
+    const lon = object.lon ?? prev?.lon;
+    if (lat !== undefined && lon !== undefined) {
+      row.lat = lat;
+      row.lon = lon;
+    }
+    const lvl = msg.lvl_db ?? prev?.lvlDb;
+    if (lvl !== undefined) row.lvlDb = lvl;
+    const sym = object.sym ?? prev?.sym;
+    if (sym !== undefined) row.sym = sym;
+    this.stations.set(key, row);
+    this.trimStations();
+  }
+
+  private updateStation(src: string, msg: RxMsg, item: FeedItem): void {
+    const prev = this.stations.get(src);
+    const row: StationRow = {
+      src,
+      lastAt: item.at,
+      count: (prev?.count ?? 0) + 1,
+      own: prev?.own ?? false,
+    };
+    // Only a position report or Mic-E tells where the sender is. Third-party packets and status
+    // locators carry somebody else's (or an approximate) position.
+    const ll = senderPosition(msg, item.parsed);
+    const lat = ll ? ll.lat : prev?.lat;
+    const lon = ll ? ll.lon : prev?.lon;
+    if (lat !== undefined && lon !== undefined) {
+      row.lat = lat;
+      row.lon = lon;
+    }
+    const lvl = msg.lvl_db ?? prev?.lvlDb;
+    if (lvl !== undefined) row.lvlDb = lvl;
+    // The symbol goes with the position.
+    const sym = (ll ? msg.sym : undefined) ?? prev?.sym;
+    if (sym !== undefined) row.sym = sym;
+    this.stations.set(src, row);
+    this.trimStations();
   }
 
   private onStations(list: StationMsg[]): void {
     const now = Date.now();
     for (const s of list) {
-      const prev = this.stations.get(s.src);
+      const obj = s.obj === true;
+      const key = stationKey(s.src, obj);
+      const prev = this.stations.get(key);
       const row: StationRow = {
         src: s.src,
+        ...(obj ? { obj: true } : {}),
         lastAt: s.last_s !== undefined ? now - s.last_s * 1000 : (prev?.lastAt ?? now),
         count: s.count ?? prev?.count ?? 0,
-        own: s.own ?? prev?.own ?? false,
+        own: obj ? false : (s.own ?? prev?.own ?? false),
       };
       const lat = s.lat ?? prev?.lat;
       const lon = s.lon ?? prev?.lon;
@@ -485,7 +534,7 @@ export class App {
       const lvl = s.lvl_db ?? prev?.lvlDb;
       if (lvl !== undefined) row.lvlDb = lvl;
       if (prev?.sym !== undefined) row.sym = prev.sym;
-      this.stations.set(s.src, row);
+      this.stations.set(key, row);
     }
     this.trimStations();
     this.notify();
@@ -497,8 +546,39 @@ export class App {
       .filter((r) => !r.own)
       .sort((a, b) => a.lastAt - b.lastAt)
       .slice(0, this.stations.size - MAX_STATIONS);
-    for (const r of oldest) this.stations.delete(r.src);
+    for (const r of oldest) this.stations.delete(stationKey(r.src, r.obj));
   }
+}
+
+interface ObjectInfo {
+  name: string;
+  lat?: number;
+  lon?: number;
+  /** Symbol as two characters ("/>"). */
+  sym?: string;
+}
+
+/**
+ * The object or item an rx packet reports, or undefined for any other packet. The device's `obj`
+ * (§8.2) wins; what the app parsed serves when the device did not say (an object it could not
+ * read). The position is the object's own, not the sender's.
+ */
+function objectOf(msg: RxMsg, parsed: AprsPacket): ObjectInfo | undefined {
+  const d = parsed.data;
+  const parsedObj = d.type === "object" || d.type === "item" ? d : undefined;
+  const name = msg.obj ?? parsedObj?.name;
+  if (name === undefined || name === "") return undefined;
+  const out: ObjectInfo = { name };
+  const pos = parsedObj?.position;
+  const lat = pos ? pos.lat : msg.lat;
+  const lon = pos ? pos.lon : msg.lon;
+  if (lat !== undefined && lon !== undefined) {
+    out.lat = lat;
+    out.lon = lon;
+  }
+  const sym = pos ? `${pos.symbol.overlay ?? pos.symbol.table}${pos.symbol.code}` : msg.sym;
+  if (sym !== undefined) out.sym = sym;
+  return out;
 }
 
 /**

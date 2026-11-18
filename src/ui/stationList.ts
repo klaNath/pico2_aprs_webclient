@@ -12,7 +12,7 @@ import {
 } from "../aprs/geo.ts";
 import { symbolInfo, symbolName, type SymbolCategory } from "../aprs/symbols.ts";
 import { packetPosition, type AprsSymbol } from "../aprs/types.ts";
-import type { FeedItem, StationRow } from "../store/state.ts";
+import { stationKey, type FeedItem, type StationRow } from "../store/state.ts";
 import { fmtAge, fmtDb, fmtDistance } from "./format.ts";
 import { AT_POSITION_M } from "./radarGeometry.ts";
 
@@ -26,7 +26,12 @@ export const SORT_LABELS: Record<SortKey, string> = {
 };
 
 export interface StationItem {
+  /** Identity in the app (`stationKey`): an object and a station can have the same name. */
+  key: string;
+  /** The callsign-SSID, or the object/item name when `obj`. */
   src: string;
+  /** An object or item (§8.4), not a station. */
+  obj: boolean;
   own: boolean;
   /** Position of the station, when known. */
   pos?: LatLon;
@@ -77,7 +82,9 @@ export function buildItems(rows: Iterable<StationRow>, me: LatLon | undefined): 
     const symbol = parseSymbolChars(r.sym);
     const info = symbol ? symbolInfo(symbol) : undefined;
     const item: StationItem = {
+      key: stationKey(r.src, r.obj),
       src: r.src,
+      obj: r.obj === true,
       own: r.own,
       lastAt: r.lastAt,
       count: r.count,
@@ -111,7 +118,7 @@ export function filterItems(items: StationItem[], query: string): StationItem[] 
  */
 export function sortItems(items: StationItem[], key: SortKey): StationItem[] {
   const byCall = (a: StationItem, b: StationItem): number =>
-    a.src < b.src ? -1 : a.src > b.src ? 1 : 0;
+    a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
   const cmp = (a: StationItem, b: StationItem): number => {
     if (a.own !== b.own) return a.own ? -1 : 1;
     switch (key) {
@@ -195,7 +202,7 @@ export function rowText(item: StationItem, now: number): RowText {
  * the row shows (`aria-label` hides the row's own contents from a screen reader).
  */
 export function ariaText(item: StationItem, now?: number): string {
-  const parts: string[] = [item.src];
+  const parts: string[] = [item.obj ? `object ${item.src}` : item.src];
   if (item.own) parts.push("this tracker");
   else if (isAtPosition(item)) parts.push("at your position");
   else if (item.distanceM !== undefined) {
@@ -218,13 +225,35 @@ export interface LatestPacket {
   at: number;
 }
 
-/** The newest received packet of `src` in the feed (oldest first), or undefined. */
-export function latestPacket(feed: readonly FeedItem[], src: string): LatestPacket | undefined {
+/** The object or item name an rx entry reports, or undefined for any other packet. */
+function objectNameOf(f: FeedItem): string | undefined {
+  const d = f.parsed.data;
+  if (d.type === "object" || d.type === "item") return d.name;
+  const obj = (f.msg as { obj?: string }).obj;
+  return obj === undefined || obj === "" ? undefined : obj;
+}
+
+/**
+ * The newest received packet of a station (or of the object or item named `src` when `obj`), in
+ * the feed (oldest first), or undefined. A station's own packets do not include the objects it
+ * sent: those belong to the object's row.
+ */
+export function latestPacket(
+  feed: readonly FeedItem[],
+  src: string,
+  obj = false,
+): LatestPacket | undefined {
   for (let i = feed.length - 1; i >= 0; i--) {
     const f = feed[i]!;
     if (f.kind !== "rx") continue;
-    const from = (f.msg as { src?: string }).src ?? f.parsed.tnc2?.src;
-    if (from !== src) continue;
+    const name = objectNameOf(f);
+    if (obj) {
+      if (name !== src) continue;
+    } else {
+      if (name !== undefined) continue;
+      const from = (f.msg as { src?: string }).src ?? f.parsed.tnc2?.src;
+      if (from !== src) continue;
+    }
     return {
       tnc2: f.msg.tnc2,
       comment: packetPosition(f.parsed)?.comment.trim() ?? "",
@@ -255,7 +284,10 @@ export function detailRows(
   const t = rowText(item, now);
   const pos = item.pos ?? (item.own ? me : undefined);
   const rows: DetailRow[] = [
-    { label: "Callsign", value: item.own ? `${t.call} (this tracker)` : t.call },
+    {
+      label: item.obj ? "Object" : "Callsign",
+      value: item.own ? `${t.call} (this tracker)` : t.call,
+    },
   ];
   if (!item.own) {
     rows.push(

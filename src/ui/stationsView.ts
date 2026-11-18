@@ -29,6 +29,7 @@ interface RowEls {
   li: HTMLLIElement;
   main: HTMLButtonElement;
   call: HTMLElement;
+  objTag: HTMLElement;
   own: HTMLElement;
   age: HTMLElement;
   dist: HTMLElement;
@@ -119,8 +120,9 @@ export function createStationsView(app: App): View {
   const list = h("ul", { class: "list st-list" });
   const el = h("section", { class: "view" }, controls, noFix, statusRow, empty, list);
 
-  function makeRow(src: string): RowEls {
+  function makeRow(key: string, src: string): RowEls {
     const call = h("span", { class: "st-call mono", text: src });
+    const objTag = h("span", { class: "st-obj", text: "OBJECT", hidden: true });
     const own = h("span", { class: "st-own", text: "THIS TRACKER", hidden: true });
     const age = h("span", { class: "st-age" });
     const dist = h("span");
@@ -135,25 +137,26 @@ export function createStationsView(app: App): View {
         attrs: { type: "button", "aria-expanded": "false" },
         on: {
           click: () => {
-            selected = selected === src ? undefined : src;
+            selected = selected === key ? undefined : key;
             // Not forced: opening a detail holds the order, closing it waits for the pointer hold.
             apply(false);
           },
         },
       },
-      h("span", { class: "st-top" }, call, own, age),
+      h("span", { class: "st-top" }, call, objTag, own, age),
       h("span", { class: "st-meta" }, dist, brg, count, lvl),
       sym,
     );
     const detailList = createDetailList();
     const detail = h("div", { class: "st-detail", hidden: true }, detailList.el);
-    const li = h("li", { class: "list-item", attrs: { "data-src": src } }, main, detail);
-    return { li, main, call, own, age, dist, brg, count, lvl, sym, detail, detailList };
+    const li = h("li", { class: "list-item", attrs: { "data-src": key } }, main, detail);
+    return { li, main, call, objTag, own, age, dist, brg, count, lvl, sym, detail, detailList };
   }
 
   function updateRow(r: RowEls, item: StationItem, now: number): void {
     const t = rowText(item, now);
     r.own.hidden = !item.own;
+    r.objTag.hidden = !item.obj;
     setText(r.age, t.age);
     r.dist.hidden = item.own;
     r.brg.hidden = item.own || t.bearing === "";
@@ -164,11 +167,11 @@ export function createStationsView(app: App): View {
     setText(r.sym, t.symbol);
     const label = ariaText(item, now);
     if (r.main.getAttribute("aria-label") !== label) r.main.setAttribute("aria-label", label);
-    const open = selected === item.src;
+    const open = selected === item.key;
     r.main.setAttribute("aria-expanded", String(open));
     r.detail.hidden = !open;
     if (open) {
-      const latest = latestPacket(app.feed, item.src);
+      const latest = latestPacket(app.feed, item.src, item.obj);
       r.detailList.update(detailRows(item, latest, now, app.ownPosition()));
     }
   }
@@ -221,7 +224,7 @@ export function createStationsView(app: App): View {
     );
 
     if (selected !== undefined && !app.stations.has(selected)) selected = undefined;
-    const wanted = shown.map((i) => i.src);
+    const wanted = shown.map((i) => i.key);
     const held =
       !force &&
       isOrderHeld({
@@ -242,7 +245,7 @@ export function createStationsView(app: App): View {
         }
       }
       for (const item of shown) {
-        const r = rows.get(item.src);
+        const r = rows.get(item.key);
         if (r) updateRow(r, item, now);
       }
       const onScreen = Array.from(list.children, (li) => (li as HTMLElement).dataset.src ?? "");
@@ -262,10 +265,10 @@ export function createStationsView(app: App): View {
     const hadFocus = active instanceof HTMLElement && list.contains(active) ? active : undefined;
     let ref: Element | null = list.firstElementChild;
     for (const item of shown) {
-      let r = rows.get(item.src);
+      let r = rows.get(item.key);
       if (!r) {
-        r = makeRow(item.src);
-        rows.set(item.src, r);
+        r = makeRow(item.key, item.src);
+        rows.set(item.key, r);
       }
       updateRow(r, item, now);
       if (ref === r.li) ref = ref.nextElementSibling;

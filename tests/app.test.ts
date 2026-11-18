@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App } from "../src/store/state.ts";
+import { App, MAX_STATIONS, stationKey } from "../src/store/state.ts";
 import { MockDevice } from "../src/transport/mock/mockDevice.ts";
 import { MockTransport } from "../src/transport/mock/mockTransport.ts";
 import type { MockTransportOptions } from "../src/transport/mock/mockTransport.ts";
@@ -73,19 +73,24 @@ describe("A: a station's position is the sender's, not an object's or a locator'
     expect(m.lon).toBeCloseTo(139 + 45.6 / 60, 6);
   });
 
-  it("does not give an object's position to the station that sent it", async () => {
+  it("does not give an object's position to the station that sent it (it gets no row, §8.4)", async () => {
     const t = await connect();
-    rx(t, OBJECT, { kind: "object", lat: 35, lon: 135 });
-    const row = app.stations.get("Q1OBJ")!;
-    expect(row.count).toBe(1);
-    expect(row.lat).toBeUndefined();
-    expect(row.lon).toBeUndefined();
+    rx(t, OBJECT, { kind: "object", obj: "OBJNAME", lat: 35, lon: 135 });
+    expect(app.stations.has("Q1OBJ")).toBe(false);
+    expect(app.stations.get(stationKey("OBJNAME", true))).toMatchObject({
+      src: "OBJNAME",
+      obj: true,
+      count: 1,
+      lat: 35,
+      lon: 135,
+    });
   });
 
   it("does not use the device's lat/lon for an object or item, even if the packet cannot be read", async () => {
     const t = await connect();
     rx(t, "Q1OBJ>APRS:;broken", { kind: "object", lat: 35, lon: 135 });
     rx(t, "Q1ITM>APRS:)broken", { kind: "item", lat: 35, lon: 135 });
+    // Without an object name there is no object row; the sender is not given the position.
     expect(app.stations.get("Q1OBJ")!.lat).toBeUndefined();
     expect(app.stations.get("Q1ITM")!.lat).toBeUndefined();
   });
@@ -122,7 +127,7 @@ describe("A: a station's position is the sender's, not an object's or a locator'
       rx(t, tnc2, extra);
     }
     const row = app.stations.get("Q1AAA")!;
-    expect(row.count).toBe(4);
+    expect(row.count).toBe(3); // the object went to its own row
     expect(row).toMatchObject(POSITION_LL);
   });
 
@@ -137,6 +142,75 @@ describe("A: a station's position is the sender's, not an object's or a locator'
     rx(t, POSITION, { kind: "position", sym: "/>" });
     rx(t, OBJECT.replace("Q1OBJ", "Q1AAA"), { kind: "object", sym: "/-" });
     expect(app.stations.get("Q1AAA")!.sym).toBe("/>");
+  });
+});
+
+describe("objects and items are rows of their own (§8.2, §8.4)", () => {
+  it("keeps an object and a station of the same name apart", async () => {
+    const t = await connect();
+    rx(t, "Q1SAME>APRS:!3540.12N/13945.67E>Hi", { kind: "position" });
+    rx(t, "Q1OBJ>APRS:;Q1SAME   *111111z3500.00N/13500.00E>x", { kind: "object", obj: "Q1SAME" });
+    const st = app.stations.get("Q1SAME")!;
+    const ob = app.stations.get(stationKey("Q1SAME", true))!;
+    expect(st.obj).toBeUndefined();
+    expect(st.count).toBe(1);
+    expect(st).toMatchObject(POSITION_LL);
+    expect(ob).toMatchObject({ obj: true, count: 1, lat: 35, lon: 135 });
+    rx(t, "Q1OBJ>APRS:;Q1SAME   *111111z3500.00N/13500.00E>x", { kind: "object", obj: "Q1SAME" });
+    expect(app.stations.get(stationKey("Q1SAME", true))!.count).toBe(2);
+    expect(app.stations.get("Q1SAME")!.count).toBe(1);
+  });
+
+  it("uses the object's own position and symbol, from the packet when it can be read", async () => {
+    const t = await connect();
+    rx(t, OBJECT, { kind: "object", obj: "OBJNAME", lat: 1, lon: 2, sym: "/-" });
+    const ob = app.stations.get(stationKey("OBJNAME", true))!;
+    expect(ob).toMatchObject({ lat: 35, lon: 135, sym: "/>" });
+  });
+
+  it("takes the device's lat/lon and sym for an object it could read but the app could not", async () => {
+    const t = await connect();
+    rx(t, "Q1OBJ>APRS:;broken", { kind: "object", obj: "ODD", lat: 10, lon: 20, sym: "/-" });
+    expect(app.stations.get(stationKey("ODD", true))).toMatchObject({
+      lat: 10,
+      lon: 20,
+      sym: "/-",
+    });
+  });
+
+  it("handles an item, and an object found only by the app (the device sent no obj)", async () => {
+    const t = await connect();
+    rx(t, "Q1ITM>APRS:)ITEMX!3500.00N/13500.00E>x", { kind: "item", obj: "ITEMX" });
+    rx(t, OBJECT, { kind: "other" });
+    expect(app.stations.get(stationKey("ITEMX", true))).toMatchObject({ obj: true, lat: 35 });
+    expect(app.stations.get(stationKey("OBJNAME", true))).toMatchObject({ obj: true, count: 1 });
+  });
+
+  it("keeps an object row from stations.list apart from the station, and never marks it own", async () => {
+    const dev = new MockDevice();
+    dev.stations = [
+      { t: "station", src: "Q1BBB", count: 4 },
+      { t: "station", src: "Q1BBB", obj: true, count: 2, lat: 35.5, lon: 139.5, own: true },
+    ];
+    devices.push(dev);
+    await connect();
+    expect(app.stations.get("Q1BBB")).toMatchObject({ count: 4, own: false });
+    expect(app.stations.get(stationKey("Q1BBB", true))).toMatchObject({
+      obj: true,
+      count: 2,
+      lat: 35.5,
+      own: false,
+    });
+  });
+
+  it("trims an object row by its own key", async () => {
+    const t = await connect();
+    for (let i = 0; i < MAX_STATIONS + 5; i++) {
+      rx(t, OBJECT, { kind: "object", obj: `OBJ${i}` });
+    }
+    expect(app.stations.size).toBe(MAX_STATIONS);
+    expect(app.stations.has(stationKey("OBJ0", true))).toBe(false);
+    expect(app.stations.has(stationKey(`OBJ${MAX_STATIONS + 4}`, true))).toBe(true);
   });
 });
 

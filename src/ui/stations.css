@@ -50,7 +50,8 @@
   white-space: nowrap;
 }
 
-.st-own {
+.st-own,
+.st-obj {
   font-size: 0.7rem;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -59,6 +60,13 @@
   background: var(--accent);
   color: var(--accent-text);
   white-space: nowrap;
+}
+
+/* An object or item is not a station: a quieter badge than THIS TRACKER. */
+.st-obj {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
 }
 
 .st-age {
