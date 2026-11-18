@@ -6,6 +6,7 @@ pico2_aprs(Pico 2 W の APRS トラッカー)を Android Chrome から BLE(Web B
 ## 再開ワード
 
 ユーザーが「**作業2を再開**」(または「再開」)と言ったら:
+
 1. `docs/HANDOFF.md` を読む(現状、決定事項、次にやること)
 2. `npm run spec` で仕様書のサブモジュールを用意し(clone 直後は必須)、続けて `npm run spec:update` で最新のコミットに進められるか確認する。ピンが動いたら、`git -C docs/spec-src log --oneline <旧>..<新>` と差分で変更点を確認して報告し、実装に反映してから、新しいピンをコミットする
 3. `docs/plan.md` の「作業の順序」に従って、HANDOFF.md の「次にやること」から進める
@@ -23,7 +24,7 @@ pico2_aprs(Pico 2 W の APRS トラッカー)を Android Chrome から BLE(Web B
 - テストデータのコールサインは Q1 で始まる架空のもの(`Q1TEST` など)を使う
 - Web 上(サーバー、DB、オブジェクトストレージ)には永続データを置かない。端末内(localStorage、Cookie)への保存は可
 - TypeScript は 6.0 系に固定(`typescript-eslint` が 7.x に未対応)。`--force` や `--legacy-peer-deps` で回避しない
-- 秘密鍵、トークンをコミットしない。リポジトリは非公開。公開する前に `docs/plan.md` のホスト名やポートを消す
+- 秘密鍵、トークンをコミットしない。リポジトリは公開(2026-11-19)。ホスト名、SSH のポート、鍵の名前、端末や実機の識別子(コールサイン、Bluetooth アドレス、広告名の末尾)、個人の開発環境の記述をコミットしない
 
 ## コマンド
 

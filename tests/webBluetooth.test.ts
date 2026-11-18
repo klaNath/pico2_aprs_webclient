@@ -112,7 +112,7 @@ class FakeServer {
 
 class FakeDevice extends EventTarget {
   id = "dev-1";
-  name = "PicoAPRS-2574";
+  name = "PicoAPRS-1A2B";
   device = new MockDevice();
   notifySize = 20;
   connectGate: Promise<void> | undefined;
@@ -157,7 +157,7 @@ describe("WebBluetoothTransport", () => {
     await p;
     expect(dev.tx.notifying).toBe(true);
     expect(t.deviceId).toBe("dev-1");
-    expect(t.name).toBe("PicoAPRS-2574");
+    expect(t.name).toBe("PicoAPRS-1A2B");
   });
 
   it("disconnect() during pairing makes connect() reject instead of hanging", async () => {

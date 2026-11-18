@@ -181,14 +181,14 @@ describe("connectBluetooth (the chooser)", () => {
   });
 
   it("lists devices allowed before (getDevices), empty where unsupported", async () => {
-    const dev = { id: "d1", name: "PicoAPRS-2574" } as unknown as BluetoothDevice;
+    const dev = { id: "d1", name: "PicoAPRS-1A2B" } as unknown as BluetoothDevice;
     const bt: BluetoothLike = {
       requestDevice: () => Promise.reject(new Error("unused")),
       getDevices: () => Promise.resolve([dev]),
     };
     const app = makeApp({ bluetooth: bt });
     await app.loadKnownDevices();
-    expect(app.knownDevices.map((d) => [d.id, d.name])).toEqual([["d1", "PicoAPRS-2574"]]);
+    expect(app.knownDevices.map((d) => [d.id, d.name])).toEqual([["d1", "PicoAPRS-1A2B"]]);
     const plain = makeApp({ bluetooth: { requestDevice: () => Promise.reject(new Error("x")) } });
     await plain.loadKnownDevices();
     expect(plain.knownDevices).toEqual([]);

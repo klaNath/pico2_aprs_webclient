@@ -1,14 +1,13 @@
-# 引き継ぎ(2026-11-17 時点)
+# 引き継ぎ(2026-11-18 時点)
 
-開発を Windows の Claude Code から Raspberry Pi 5(Remote-SSH)に移すためのメモ。計画の全体は [plan.md](plan.md)。
+作業の引き継ぎのメモ(現状、決定事項、次にやること)。計画の全体は [plan.md](plan.md)。
 
 ## 完了したこと
 
 - 計画の策定と、ユーザーとの合意(plan.md の「決定事項」)
-- Pi 5 のセットアップ: apt 更新、Bluetooth 有効化(`disable-bt` をコメントアウト、`config.txt.bak-20261117` に退避)、デスクトップ + Chromium 156、nvm + Node v26.13.1 / npm 11.20.0、GitHub CLI、bleak の venv(`~/venv/ble`)
-- git: user.name は klaNath、user.email は GitHub の noreply。`gh auth login` 済み(HTTPS)
+- 開発環境: Node v26.13.1 / npm 11.20.0(nvm)、GitHub CLI、Chromium、adb(Android 実機の確認用)
 - 雛形(作業 1): Vite 8 + TS 6.0.3 + vitest 5 + vite-plugin-pwa 2 + eslint 10 + prettier。typecheck、test、lint、build が通ることを確認済み
-- 非公開リポジトリ https://github.com/klaNath/pico2_aprs_webclient に push 済み(main)
+- 公開リポジトリ https://github.com/klaNath/pico2_aprs_webclient(2026-11-19 に非公開から公開に変えた)。main に push 済み
 - 仕様書は git サブモジュール `docs/spec-src`(`klaNath/pico2_aprs` の `main` を追跡、sparse-checkout で ble-protocol.md と ble-control.md のみ)。取得と更新は `npm run spec` / `npm run spec:update`(`scripts/setup-spec.sh`)
 
 ## 仕様書の版(前回確認したもの)
@@ -82,7 +81,7 @@
 - 作業 5 で確認すること: `requestDevice` はクリックの中で同期的に呼ぶ(`connectWith` の `await` の後だと、Chrome のユーザー操作の有効期間(約 5 秒)を超えうる)。自動再接続は `App`/同じ `DeviceClient` の `start()` 再呼び出しで作る(置き場所はコメントにある)。`Transport` に `deviceId`(`BluetoothDevice.id`)を入れる
 - Android 実機で未確認: 戻るボタン(タブは `#hash` と `pushState`)、pull-to-refresh の抑止、`proto_mismatch` と `handshaking` の画面
 - 未対応(Low): `theme-color` はアプリ内のテーマ選択に連動しない。ヘッダーの callsign は、保存の直後は次の `status`(最大 5 秒)まで古い。Reset の結果で `tx_enabled` が true になりうる(Reset の確認と、結果が true のときの警告で扱っている)
-- 公開前: `docs/HANDOFF.md` と `docs/plan.md` にホスト名、SSH ポート、鍵のファイル名がある(履歴にも残る。CLAUDE.md が消すと指示しているのは plan.md だけ)。公開するなら、履歴を書き換えるか、新しいリポジトリで公開する。サブモジュールの URL は非公開の可能性がある。`npm audit` は開発時のツールだけ(成果物には入らない)
+- 公開(2026-11-19): ホスト名、SSH のポート、鍵の名前は、履歴も含めてプレースホルダーに置き換え済み。個人の開発環境の記述(SSH、Windows、Pi 5 のセットアップ)は plan.md と HANDOFF から削除した。履歴に残る実機の識別子: 作業 5 のテストに入れた広告名の末尾 4 桁(`PicoAPRS-` に続く値。MAC の下位 2 バイト)が 1 つのコミットに残っている(現在のツリーでは架空の値に替えた)。実機のコールサインとアドレスはどこにも書いていない。`npm audit` は開発時のツールだけ(成果物には入らない)
 - 仕様側(`pico2_aprs`)に伝えるべき点(Issue は未作成): §8.4 の `station.src` はオブジェクトでは「オブジェクト名」、§8.2 の `rx.src` は常に送信局で、`stations.list` と rx から局を作るときにキーの意味が食い違う
 
 ### 画面を確認する方法(この環境)
@@ -95,7 +94,6 @@
 - `App`(`state.ts`): `connectBluetooth()` はチューザーをクリックの中で同期的に開く(`await` の前)。チューザーの取り消しはエラーにしない。`connectDevice(device)`、`loadKnownDevices()`/`knownDevices`(起動時に読む。接続カードに「Reconnect to PicoAPRS-XXXX」)
 - 自動再接続: リンクが切れたら(利用者の切断ではないとき)同じ `DeviceClient` で `start()` をやり直す(§10)。待ち時間は 1, 2, 4, 8, 16 秒、以後 30 秒。20 回で諦めて案内を出す。`proto_mismatch` では止める。利用者の切断と新しい接続で止まる。`app.reconnect`(`attempt`、次の試行の時刻)、`reconnectNow()`。ヘッダーに「Reconnecting…」、接続カードに残り秒数と「Reconnect now」「Cancel」
 - テスト: 偽の GATT(`MockDevice` につないだもの)で `DeviceClient` の §6.2 の流れ、書き込みが 20 バイト以下で 1 つずつ、UTF-8 の分割、ペアリング中の取り消し、リンク切れ、同じ transport での再接続を確かめる(`tests/webBluetooth.test.ts`)。再接続とチューザーは `tests/appReconnect.test.ts`。全体で 32 ファイル 906 件
-- Pi 5 の BlueZ でスキャンしたが、2026-11-18 の時点では近くに広告中のトラッカーはなかった
 
 ### 実機確認の結果(2026-11-18。Android 11、Chrome 157。adb は Wi-Fi 経由、`adb reverse` で dev サーバーに接続)
 
@@ -112,7 +110,7 @@
 
 ### Android の Chrome で確かめる(利用者の操作が要る。済んだ項目は上の結果)
 
-手順: トラッカーの電源を入れ(ほかの端末とつながっていないこと。接続中は広告しない)、Pi 5 で `npm run dev -- --host 127.0.0.1 --port 5173 --strictPort` を起動し、`adb reverse tcp:5173 tcp:5173`(Windows の場合は VS Code の転送ポートを経由。`adb` は S7)。Android の Chrome で `http://localhost:5173/` を開く(localhost は HTTPS と同じ扱いで Web Bluetooth が使える。dev サーバーは CSP の meta を外す)。端末のロックは私からは解除できない。画面は `adb exec-out screencap -p` で撮れ、DevTools は `adb forward tcp:9222 localabstract:chrome_devtools_remote` で使える(`pkill -f` は自分のシェルを巻き込むので使わない)
+手順: トラッカーの電源を入れ(ほかの端末とつながっていないこと。接続中は広告しない)、`npm run dev -- --host 127.0.0.1 --port 5173 --strictPort` を起動し、`adb reverse tcp:5173 tcp:5173`。Android の Chrome で `http://localhost:5173/` を開く(localhost は HTTPS と同じ扱いで Web Bluetooth が使える。dev サーバーは CSP の meta を外す)。端末のロックは私からは解除できない。画面は `adb exec-out screencap -p` で撮れ、DevTools は `adb forward tcp:9222 localabstract:chrome_devtools_remote` で使える(`pkill -f` は自分のシェルを巻き込むので使わない)
 
 残り:
 
@@ -123,9 +121,13 @@
 5. 戻るボタンと pull-to-refresh の抑止(作業 4 の未確認)を確かめる。`PAIRING_HINT` と接続待ちの表示には「通知の『Pairing request』を開く」を足した(Android 実機で表示を確認済み。「Do it soon, because the tracker drops a connection that stays unpaired」は、ファームウェア側の 60 秒の切断が実機では未確認のままの記述)
 6. 仕様 v0.4 への対応(2026-11-18 に済み。下の「仕様 v0.4 への対応」)。残りは実機での確認: `hello` の再送が 60 秒続くこと、書き込み失敗後の `\n`(§5.3)の挙動
 
-### 作業 6(PWA と Pages)
+### 作業 6(PWA と Pages): PWA は実装済み。配信は未実施
 
-plan.md の順。`vite.config.ts`(dev だけ CSP を外すプラグインがある)に `vite-plugin-pwa` を足す。`base` は Pages のサブパス(相対)。manifest とアイコン(`public/` は Vite の雛形のまま)、`registerType` は `prompt`(接続中に勝手に再読み込みしない)。CSP に `worker-src 'self'` と `manifest-src 'self'` は入れてある。非公開リポジトリで Pages が使えるかを確かめる。公開する場合はサブモジュールの URL(非公開)を README に書く。
+- 実装済み(2026-11-18): `vite-plugin-pwa`(`vite.config.ts`。`registerType: "prompt"`、`injectRegister: false`、generateSW、precache のみ、`navigateFallback`)。`base: "./"`(Pages の `/<repo>/` でも、`file://` でも動く)。manifest(standalone、`start_url`/`scope`/`id` は `./`、テーマ色 `#0f141b`)。アイコンは `public/` の `favicon.svg`(レーダーの図。Vite の雛形のロゴから差し替え)、`icon-192.png`、`icon-512.png`(maskable も兼ねる。中身は安全域の内側)、`apple-touch-icon.png`。`public/icons.svg`(雛形の残り)は削除
+- 更新は自動で行わない: `src/pwa.ts` が登録し、新しい版が待機すると `src/ui/updateBanner.ts` の案内「A new version is available.」と「Update」ボタン(接続中は「接続が切れる」と書く)。初回だけ「オフラインで動く」の案内(Dismiss)。本番ビルドのときだけ登録する(dev は登録しない)
+- 実機で確認(Android 11、Chrome 157、`vite preview` を `adb reverse` 経由): service worker が activated、precache 済み、サーバーを止めてリロードしても起動する(`controller` あり)、「オフラインで動く」の案内が出る。確認していない: ホーム画面への追加(インストール)、更新の流れ(新しい版を出して「Update」を押す)
+- `.github/workflows/deploy.yml`: build(typecheck、lint、test、build)と deploy。**手動実行だけ**にしてある(`workflow_dispatch`)。Pages を有効にするまで、push で動かすと毎回失敗するため
+- 未実施: GitHub Pages の有効化(リポジトリは 2026-11-19 に公開した。ホスト名などは書き換え済み)。Settings > Pages > Source を GitHub Actions にし、workflow を手動で 1 回動かして URL と動作を確かめてから、`on:` に `push: { branches: [main] }` を足す。サブモジュールの `klaNath/pico2_aprs` も公開されている
 
 ## 仕様 v0.4 への対応(ピンを `f6e3364` → `f8cd818`)
 
@@ -137,14 +139,11 @@ plan.md の順。`vite.config.ts`(dev だけ CSP を外すプラグインがあ�
 
 ## 環境の注意
 
-- ソースは Pi 5 の `~/src/pico2_aprs_webclient`。Node は nvm 経由(非対話のシェルでは `. ~/.nvm/nvm.sh` が必要)
-- Bluetooth は Powered: yes。rfkill は `/usr/sbin/rfkill`(PATH にない)
-- sshd は Port <port>、パスワード認証なし。Windows 側の鍵は `~/.ssh/id_ed25519_<key-name>`、ホスト名は `<host>`(config に設定)
-- Pi 5 は graphical.target。画面の見方(モニター直結 / VNC / Raspberry Pi Connect)は未決定
+- Node は nvm 経由(非対話のシェルでは `. ~/.nvm/nvm.sh` が必要)
 - npm audit の警告 4 件は、ビルド時のみの依存(vite-plugin-pwa → workbox-build → glob)。成果物には入らない
 
 ## 未確認・未決定
 
-- Pi 5 の Chromium で Web Bluetooth が使えるか(フラグが必要かもしれない)
+- デスクトップ Linux の Chromium で Web Bluetooth が使えるか(フラグが必要かもしれない)
 - 仕様の未確定項目: U3(Chrome での結果は「実機確認の結果」に書いた。間違ったパスキーと取り消しは未確認なので Issue #5 は開いたまま)、U2(Device Information Service)、U5(`hello` にファームウェアの版を入れるか)、U6(`settings.set` の保存中に受信がどれだけ欠けるか)、U8(Bluetooth 5.x の Windows で通知が止まる問題が出ないか)
-- GitHub Pages の公開設定は、作業 6 のとき。非公開リポジトリで Pages を使えるプランかどうか確認する
+- GitHub Pages の有効化は、作業 6 の続き(上)
