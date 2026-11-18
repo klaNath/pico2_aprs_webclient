@@ -92,7 +92,8 @@ export function createHeader(app: App): View {
       setText(badge, b.label);
       setText(detail, b.detail);
       const call = app.status?.call;
-      setText(conn, st === "ready" && call ? `${STATE_LABEL[st]} · ${call}` : STATE_LABEL[st]);
+      const label = app.reconnect && st !== "ready" ? "Reconnecting…" : STATE_LABEL[st];
+      setText(conn, st === "ready" && call ? `${label} · ${call}` : label);
       conn.className = `conn conn-${st}`;
     },
   };

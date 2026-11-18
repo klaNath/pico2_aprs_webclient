@@ -214,3 +214,5 @@ if (
 }
 // ?mock=1 starts the Demo; ?fast=1 makes the demo device chatty.
 if (params.get("mock") === "1") void app.connectMock({ fast: params.get("fast") === "1" });
+// Trackers this site was allowed to use before can be reconnected without the chooser.
+else void app.loadKnownDevices();

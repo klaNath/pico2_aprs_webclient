@@ -89,17 +89,30 @@
 
 この環境の Chromium は `http://127.0.0.1` のページを読み込めない。`VITE_ENABLE_DEBUG=1 npx vite build --base=./ --outDir <dir> --emptyOutDir` で作り、`file://` で開く。DevTools プロトコルでスクリーンショットとコンソールを取る(スクリプトはスクラッチにあり、リポジトリにはない。必要なら `tools/` に入れる)。
 
-## 次にやること(作業 5: Web Bluetooth)
+## 作業 5 の結果(実装済み。実機では未確認)
 
-plan.md の「作業の順序」5 に従う。`src/transport/webBluetooth.ts` を作り(`Transport` の契約は `src/transport/transport.ts` のコメント)、`App.connectBluetooth()`(`state.ts`)をつなぐ。
+- `src/transport/webBluetooth.ts`: `WebBluetoothTransport`(NUS。`connect()` は `gatt.connect` → サービス → TX/RX → `startNotifications` まで済んで resolve。初回のペアリングは TX の通知開始で起きる想定なので、パスキー入力の間 `connect()` は待つ。`disconnect()` は待っている `connect()` と書き込みを reject させる。書き込みは `writeValueWithResponse` で 20 バイト以下、通知はコピーして渡す)。`requestTrackerDevice`(NUS の UUID で絞る。名前では絞らない)、`knownTrackerDevices`(`getDevices`)
+- `App`(`state.ts`): `connectBluetooth()` はチューザーをクリックの中で同期的に開く(`await` の前)。チューザーの取り消しはエラーにしない。`connectDevice(device)`、`loadKnownDevices()`/`knownDevices`(起動時に読む。接続カードに「Reconnect to PicoAPRS-XXXX」)
+- 自動再接続: リンクが切れたら(利用者の切断ではないとき)同じ `DeviceClient` で `start()` をやり直す(§10)。待ち時間は 1, 2, 4, 8, 16 秒、以後 30 秒。20 回で諦めて案内を出す。`proto_mismatch` では止める。利用者の切断と新しい接続で止まる。`app.reconnect`(`attempt`、次の試行の時刻)、`reconnectNow()`。ヘッダーに「Reconnecting…」、接続カードに残り秒数と「Reconnect now」「Cancel」
+- テスト: 偽の GATT(`MockDevice` につないだもの)で `DeviceClient` の §6.2 の流れ、書き込みが 20 バイト以下で 1 つずつ、UTF-8 の分割、ペアリング中の取り消し、リンク切れ、同じ transport での再接続を確かめる(`tests/webBluetooth.test.ts`)。再接続とチューザーは `tests/appReconnect.test.ts`。全体で 32 ファイル 906 件
+- Pi 5 の BlueZ でスキャンしたが、2026-11-18 の時点では近くに広告中のトラッカーはなかった
 
-- NUS のサービス UUID で `requestDevice`、`getDevices` で再接続、`startNotifications`、書き込みは `writeValueWithResponse` で 20 バイト以下、1 回ごとに完了を待つ(§5.2)。名前 `PicoAPRS-XXXX` は表示に使い、絞り込みには使わない(§2)
-- 自動再接続と指数バックオフ(切断後に §6.2 の流れを最初から)。接続中は広告しないので、別の端末が接続中だと見つからない
-- U3(Chrome でペアリングダイアログが出るか)は Android で確認し、結果を `klaNath/pico2_aprs` の Issue #5 に書く。結果で `connectView.ts` の案内文を変える
-- `adb reverse` と `chrome://inspect`(S7)で Android の Chrome を使う。Windows の Chrome は U8 のため保留
-- 作業 4 の既知の課題の解消は、このあとでもよい
+## 次にやること(作業 5 の実機確認 → 作業 6)
 
-その後は plan.md の順(作業 6: PWA と Pages)。
+### Android の Chrome で確かめる(利用者の操作が要る)
+
+1. トラッカーの電源を入れる(ほかの端末とつながっていないこと。接続中は広告しない)
+2. Pi 5 で `npm run dev -- --host 127.0.0.1 --port 5173 --strictPort`。Android を USB でつなぎ、`adb reverse tcp:5173 tcp:5173`(Windows の場合は VS Code の転送ポートを経由。`adb` は S7)
+3. Android の Chrome で `http://localhost:5173/` を開く(localhost は HTTPS と同じ扱いで Web Bluetooth が使える。dev サーバーは CSP の meta を外す)。`chrome://inspect` でコンソールを見る
+4. 「Connect to device」→ チューザーで `PicoAPRS-XXXX` を選ぶ → ペアリングのダイアログが出るか、LCD の 6 桁を入力できるか(U3)。出たタイミング(チューザー直後、通知の開始、最初の書き込み)を記録する
+5. 接続後: Status の TX 表示、rx が連続して届くか、`dropped`、Settings の読み込み(schema は約 1.1 KB の連続通知)
+6. 再接続: トラッカーを離す/電源を切る → 「Reconnecting…」→ 戻すと自動で ready になるか。アプリを再読み込み → 「Reconnect to PicoAPRS-XXXX」(getDevices)で、チューザーなしで接続できるか
+7. 間違ったパスキー、ダイアログの取り消し、ペアリングを OS 側で削除した後の挙動
+8. 結果を `klaNath/pico2_aprs` の Issue #5 に書き、`connectView.ts` の案内文(`PAIRING_HINT`)を合わせる。戻るボタンと pull-to-refresh の抑止(作業 4 の未確認)もここで確かめる
+
+### 作業 6(PWA と Pages)
+
+plan.md の順。`vite.config.ts`(dev だけ CSP を外すプラグインがある)に `vite-plugin-pwa` を足す。`base` は Pages のサブパス(相対)。manifest とアイコン(`public/` は Vite の雛形のまま)、`registerType` は `prompt`(接続中に勝手に再読み込みしない)。CSP に `worker-src 'self'` と `manifest-src 'self'` は入れてある。非公開リポジトリで Pages が使えるかを確かめる。公開する場合はサブモジュールの URL(非公開)を README に書く。
 
 ## 環境の注意
 

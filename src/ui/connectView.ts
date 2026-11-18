@@ -5,8 +5,8 @@
 
 import type { ClientState } from "../client/deviceClient.ts";
 import { PROTO_VERSION } from "../protocol/types.ts";
-import type { App } from "../store/state.ts";
-import { h, setText } from "./dom.ts";
+import { RECONNECT_MAX_ATTEMPTS, type App } from "../store/state.ts";
+import { h, setChildren, setText } from "./dom.ts";
 import { hasLastKnownData } from "./shell.ts";
 import type { View } from "./view.ts";
 
@@ -40,6 +40,19 @@ export function webBluetoothHelp(hasBluetooth: boolean, isSecure: boolean): stri
     : "Web Bluetooth is not available. This page is not on HTTPS (or localhost), which Web Bluetooth requires, and the browser may not support it either. Open the https:// address in Chrome on Android. You can still try the demo.";
 }
 
+/** The line about the automatic reconnect, or undefined when there is none. */
+export function reconnectText(
+  info: { attempt: number; at: number | undefined } | undefined,
+  now: number,
+  maxAttempts: number,
+): string | undefined {
+  if (!info) return undefined;
+  const of = `attempt ${info.attempt} of ${maxAttempts}`;
+  if (info.at === undefined) return `Link lost. Reconnecting… (${of})`;
+  const s = Math.max(0, Math.ceil((info.at - now) / 1000));
+  return `Link lost. Reconnecting in ${s} s (${of}).`;
+}
+
 export const PAIRING_HINT =
   "Your phone may ask you to pair. If it does, enter the 6-digit passkey shown on the tracker's LCD.";
 
@@ -67,7 +80,17 @@ export function createConnectView(app: App): View {
     attrs: { type: "button" },
     on: { click: () => void app.disconnect() },
   });
-  const buttons = h("div", { class: "row" }, btBtn, demoBtn, cancelBtn);
+  const nowBtn = h("button", {
+    class: "btn",
+    text: "Reconnect now",
+    attrs: { type: "button" },
+    on: { click: () => app.reconnectNow() },
+  });
+  const reconnectLine = h("p", { class: "progress", attrs: { role: "status" } });
+  const buttons = h("div", { class: "row" }, btBtn, demoBtn, nowBtn, cancelBtn);
+  // Trackers allowed before: connect without the chooser (getDevices).
+  const known = h("div", { class: "row known-devices" });
+  let knownKey = "";
   const progress = h("p", { class: "progress", attrs: { role: "status" } });
   const pairing = h(
     "div",
@@ -106,7 +129,9 @@ export function createConnectView(app: App): View {
     intro,
     pairing,
     progress,
+    reconnectLine,
     problem,
+    known,
     buttons,
     noBt,
     help,
@@ -123,9 +148,29 @@ export function createConnectView(app: App): View {
       setText(heading, compact ? "Connection" : "Connect to your tracker");
       intro.hidden = compact;
       pairing.hidden = compact && !busy;
-      btBtn.disabled = busy;
+      const recon = reconnectText(app.reconnect, Date.now(), RECONNECT_MAX_ATTEMPTS);
+      reconnectLine.hidden = !recon;
+      setText(reconnectLine, recon ?? "");
+      nowBtn.hidden = !app.reconnect || app.reconnect.at === undefined;
+      btBtn.disabled = busy || !app.hasBluetooth;
       demoBtn.disabled = busy;
-      cancelBtn.hidden = !busy;
+      cancelBtn.hidden = !busy && !app.reconnect;
+      const key = app.knownDevices.map((d) => d.id).join("|");
+      if (key !== knownKey) {
+        knownKey = key;
+        setChildren(
+          known,
+          ...app.knownDevices.map((d) =>
+            h("button", {
+              class: "btn",
+              text: `Reconnect to ${d.name ?? "tracker"}`,
+              attrs: { type: "button" },
+              on: { click: () => void app.connectDevice(d.device) },
+            }),
+          ),
+        );
+      }
+      known.hidden = busy || app.knownDevices.length === 0 || app.state === "ready";
       progress.hidden = !busy;
       // Chrome may delay pairing until the first write, which happens while "handshaking".
       setText(

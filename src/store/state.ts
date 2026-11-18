@@ -9,6 +9,13 @@ import { describeConnectError } from "./connectError.ts";
 import type { ErrMsg, HelloMsg, RxMsg, StationMsg, StatusMsg, TxMsg } from "../protocol/types.ts";
 import { MockTransport, type MockTransportOptions } from "../transport/mock/mockTransport.ts";
 import type { Transport } from "../transport/transport.ts";
+import {
+  getBluetooth,
+  knownTrackerDevices,
+  requestTrackerDevice,
+  WebBluetoothTransport,
+  type BluetoothLike,
+} from "../transport/webBluetooth.ts";
 import { Prefs } from "./prefs.ts";
 
 export interface FeedItem {
@@ -44,6 +51,32 @@ export const MAX_RECENT_ERRORS = 20;
 export interface AppOptions {
   /** Makes the simulated device's transport (Demo). Tests replace it to keep hold of it. */
   createMockTransport?: (opts: MockTransportOptions) => MockTransport;
+  /** `navigator.bluetooth` (tests pass a fake; null = none). */
+  bluetooth?: BluetoothLike | null;
+}
+
+/** A device this site may connect to without the chooser (from `getDevices`). */
+export interface KnownDevice {
+  id: string;
+  name: string | undefined;
+  device: BluetoothDevice;
+}
+
+/** Automatic reconnect after the link dropped (not after the user's disconnect). */
+export interface ReconnectInfo {
+  /** 1 for the first try after the drop. */
+  attempt: number;
+  /** Date.now() of the next try; undefined while a try is running. */
+  at: number | undefined;
+}
+
+/** Tries before giving up (about 8 minutes with the delays below). */
+export const RECONNECT_MAX_ATTEMPTS = 20;
+
+/** Wait before reconnect try `attempt` (1-based): 1, 2, 4, 8, 16, then 30 s. */
+export function reconnectDelayMs(attempt: number): number {
+  const n = Number.isFinite(attempt) ? Math.max(1, Math.floor(attempt)) : 1;
+  return Math.min(30_000, 1000 * 2 ** (n - 1));
 }
 
 /** An `err` event from the device that did not answer a request of ours. */
@@ -86,8 +119,15 @@ export class App {
   private kind: "user" | "link" | undefined;
   /** Which device the feed and stations belong to (see `deviceKeyOf`). */
   private deviceKey: string | undefined;
+  private readonly bt: BluetoothLike | undefined;
+  /** Set while reconnecting automatically. */
+  reconnect: ReconnectInfo | undefined;
+  private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Devices allowed before (see `loadKnownDevices`). */
+  knownDevices: KnownDevice[] = [];
 
   constructor(options: AppOptions = {}) {
+    this.bt = options.bluetooth === undefined ? getBluetooth() : (options.bluetooth ?? undefined);
     this.createMockTransport = options.createMockTransport ?? ((o) => new MockTransport(o));
     // A smaller limit applies at once, also while disconnected.
     this.prefs.onChange(() => {
@@ -146,16 +186,64 @@ export class App {
     );
   }
 
-  /** Real Bluetooth arrives with work 5 (webBluetooth.ts), through `connectWith`. */
+  /** Whether Web Bluetooth exists here (Chrome, HTTPS). */
+  get hasBluetooth(): boolean {
+    return this.bt !== undefined;
+  }
+
+  /**
+   * Choose a tracker in Chrome's chooser and connect to it. Call it straight from a click handler:
+   * the chooser is opened synchronously, before anything is awaited (§10). Cancelling the chooser
+   * is not an error.
+   */
   connectBluetooth(): Promise<void> {
-    this.notice = "Bluetooth connection is not available in this build yet. Use Demo.";
+    const bt = this.bt;
+    if (!bt) {
+      this.notice = "Web Bluetooth is not available in this browser.";
+      this.notify();
+      return Promise.resolve();
+    }
+    let chooser: Promise<BluetoothDevice>;
+    try {
+      chooser = requestTrackerDevice(bt);
+    } catch (e) {
+      chooser = Promise.reject(e instanceof Error ? e : new Error(String(e)));
+    }
+    return chooser.then(
+      (device) => this.connectDevice(device),
+      (e: unknown) => {
+        const name = e instanceof Error ? e.name : "";
+        if (name === "NotFoundError" || name === "AbortError") return; // chooser cancelled
+        this.notice = describeConnectError(e) || undefined;
+        this.notify();
+      },
+    );
+  }
+
+  /** Connect to a device from the chooser or from `knownDevices` (no chooser needed). */
+  connectDevice(device: BluetoothDevice): Promise<void> {
+    return this.connectWith(new WebBluetoothTransport(device), false);
+  }
+
+  /** Fills `knownDevices` from `navigator.bluetooth.getDevices()` (empty where unsupported). */
+  async loadKnownDevices(): Promise<void> {
+    if (!this.bt) return;
+    const list = await knownTrackerDevices(this.bt);
+    this.knownDevices = list.map((d) => ({ id: d.id, name: d.name ?? undefined, device: d }));
     this.notify();
-    return Promise.resolve();
+  }
+
+  /** Try the automatic reconnect now instead of waiting for the next one. */
+  reconnectNow(): void {
+    if (!this.reconnect || this.reconnect.at === undefined) return;
+    clearTimeout(this.reconnectTimer);
+    void this.runReconnect(this.token);
   }
 
   /** The user ends the connection (also cancels one that is still connecting). */
   async disconnect(): Promise<void> {
     this.token++; // voids an attempt that is still waiting for its turn
+    this.stopReconnect();
     this.kind = "user";
     this.notice = undefined;
     await this.client?.stop();
@@ -183,6 +271,7 @@ export class App {
    */
   async connectWith(transport: Transport, mock: boolean): Promise<void> {
     const token = ++this.token;
+    this.stopReconnect();
     // Everything that follows the old client must stop at once, not after the awaits below.
     this.detach();
     const old = this.client;
@@ -240,8 +329,61 @@ export class App {
       this.notice = undefined;
       // The user's disconnect() sets "user" before it stops the client.
       this.kind ??= "link";
+      // A link that dropped by itself is tried again (§10: run §6.2 again on the same client).
+      if (this.kind === "link" && !this.reconnect) this.scheduleReconnect(1);
+    } else if (s === "ready") {
+      this.stopReconnect();
+    } else if (s === "proto_mismatch") {
+      this.stopReconnect(); // trying again cannot help
     }
     this.notify();
+  }
+
+  // ---- automatic reconnect ----------------------------------------------------------------
+
+  private scheduleReconnect(attempt: number): void {
+    if (attempt > RECONNECT_MAX_ATTEMPTS) {
+      this.stopReconnect();
+      this.notice =
+        "Could not reconnect to the tracker. Check that it is on and nearby, then connect again.";
+      this.notify();
+      return;
+    }
+    const delay = reconnectDelayMs(attempt);
+    const token = this.token;
+    this.reconnect = { attempt, at: Date.now() + delay };
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = setTimeout(() => void this.runReconnect(token), delay);
+    this.notify();
+  }
+
+  private async runReconnect(token: number): Promise<void> {
+    const info = this.reconnect;
+    const client = this.client;
+    if (!info || !client || token !== this.token) return;
+    this.reconnect = { attempt: info.attempt, at: undefined };
+    this.notify();
+    try {
+      await client.start();
+    } catch {
+      // The reason is not shown: the next try is scheduled below.
+    }
+    // Cancelled (disconnect(), connectWith()) or done ("ready" cleared it) meanwhile?
+    if (token !== this.token || this.client !== client || !this.reconnect) return;
+    if (client.state === "proto_mismatch") {
+      this.stopReconnect();
+      return;
+    }
+    this.scheduleReconnect(info.attempt + 1);
+  }
+
+  private stopReconnect(): void {
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    if (this.reconnect) {
+      this.reconnect = undefined;
+      this.notify();
+    }
   }
 
   /** The feed belongs to one device: another one (or Demo vs real) starts with an empty one. */
