@@ -3,6 +3,8 @@ import { DeviceClient } from "../src/client/deviceClient.ts";
 import { LineAssembler } from "../src/protocol/framing.ts";
 import { MockDevice } from "../src/transport/mock/mockDevice.ts";
 import {
+  GATT_CONNECT_TIMEOUT_MS,
+  GATT_DISCOVER_TIMEOUT_MS,
   NUS_RX,
   NUS_SERVICE,
   NUS_TX,
@@ -203,6 +205,54 @@ describe("WebBluetoothTransport", () => {
     await t.connect();
     await t.disconnect();
     expect(reasons).toEqual(["link lost", "closed by the app"]);
+  });
+
+  it("gives up a gatt.connect() that never answers, cancels it, and can connect again", async () => {
+    vi.useFakeTimers();
+    const dev = new FakeDevice();
+    dev.connectGate = new Promise(() => undefined); // Chrome: pending for ever
+    const t = transportFor(dev);
+    const disconnect = vi.spyOn(dev.gatt, "disconnect");
+    const p = t.connect();
+    const assertion = expect(p).rejects.toMatchObject({ name: "TimeoutError" });
+    await vi.advanceTimersByTimeAsync(GATT_CONNECT_TIMEOUT_MS - 1);
+    expect(disconnect).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await assertion;
+    expect(disconnect).toHaveBeenCalledTimes(1); // the pending connect is cancelled
+    dev.connectGate = undefined;
+    await t.connect();
+    expect(dev.tx.notifying).toBe(true);
+  });
+
+  it("gives up a service lookup that never answers", async () => {
+    vi.useFakeTimers();
+    const dev = new FakeDevice();
+    const t = transportFor(dev);
+    vi.spyOn(dev.gatt, "getPrimaryService").mockReturnValue(new Promise(() => undefined));
+    const p = t.connect();
+    const assertion = expect(p).rejects.toMatchObject({ name: "TimeoutError" });
+    await vi.advanceTimersByTimeAsync(GATT_DISCOVER_TIMEOUT_MS);
+    await assertion;
+    expect(dev.gatt.connected).toBe(false);
+  });
+
+  it("does not time out while the user types the passkey (startNotifications has no limit)", async () => {
+    vi.useFakeTimers();
+    const dev = new FakeDevice();
+    const pairing = deferred();
+    dev.tx.gate = pairing.promise;
+    const t = transportFor(dev);
+    let result = "pending";
+    const p = t.connect().then(
+      () => (result = "ok"),
+      () => (result = "failed"),
+    );
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(result).toBe("pending");
+    pairing.resolve();
+    await p;
+    expect(result).toBe("ok");
   });
 
   it("does not report a disconnect when it was never connected", async () => {

@@ -36,6 +36,13 @@ describe("describeConnectError", () => {
     expect(describeConnectError(new DeviceError("write_failed", "x"))).toMatch(/send/i);
   });
 
+  it("explains a Web Bluetooth TimeoutError like a device timeout", () => {
+    const e = Object.assign(new Error("Connecting to the tracker timed out after 30 s"), {
+      name: "TimeoutError",
+    });
+    expect(describeConnectError(e)).toMatch(/did not respond/i);
+  });
+
   it("is empty for proto_mismatch: the app state carries it", () => {
     expect(describeConnectError(new DeviceError("proto_mismatch", "device proto 9"))).toBe("");
   });

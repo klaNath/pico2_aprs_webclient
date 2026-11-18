@@ -37,6 +37,7 @@ export function describeConnectError(e: unknown): string {
   if (e instanceof Error) {
     // Web Bluetooth rejects with DOMExceptions.
     if (e.name === "NotFoundError") return "No device was selected.";
+    if (e.name === "TimeoutError") return BY_CODE.timeout!;
     if (e.name === "SecurityError" || e.name === "NotAllowedError") {
       return "Bluetooth is not allowed here. Check the permission for this site.";
     }

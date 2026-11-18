@@ -40,6 +40,30 @@ export async function knownTrackerDevices(bt: BluetoothLike): Promise<BluetoothD
   }
 }
 
+/**
+ * How long a step of connect() may take before it is given up. Chrome's `gatt.connect()` can stay
+ * pending for ever: after the phone's Bluetooth was switched off and on, or when the tracker went
+ * out of range during a reconnect, no answer ever comes and the app would sit in "Connecting…".
+ * `startNotifications()` has no limit: the first one waits for the user to type the passkey (§4).
+ */
+export const GATT_CONNECT_TIMEOUT_MS = 30_000;
+export const GATT_DISCOVER_TIMEOUT_MS = 15_000;
+
+/** Rejects with a TimeoutError if `p` has not settled after `ms`. */
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(
+        Object.assign(new Error(`${what} timed out after ${Math.round(ms / 1000)} s`), {
+          name: "TimeoutError",
+        }),
+      );
+    }, ms);
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
+}
+
 function errorName(e: unknown): string {
   return typeof e === "object" && e !== null && "name" in e ? String(e.name) : "";
 }
@@ -99,10 +123,22 @@ export class WebBluetoothTransport implements Transport {
     aborted.catch(() => undefined); // only observed through the race below
     const step = <T>(p: Promise<T>): Promise<T> => Promise.race([p, aborted]);
     try {
-      const server = await step(gatt.connect());
-      const service = await step(server.getPrimaryService(NUS_SERVICE));
-      const tx = await step(service.getCharacteristic(NUS_TX));
-      const rx = await step(service.getCharacteristic(NUS_RX));
+      const server = await step(
+        withTimeout(gatt.connect(), GATT_CONNECT_TIMEOUT_MS, "Connecting to the tracker"),
+      );
+      const service = await step(
+        withTimeout(
+          server.getPrimaryService(NUS_SERVICE),
+          GATT_DISCOVER_TIMEOUT_MS,
+          "Finding the tracker's service",
+        ),
+      );
+      const tx = await step(
+        withTimeout(service.getCharacteristic(NUS_TX), GATT_DISCOVER_TIMEOUT_MS, "Finding TX"),
+      );
+      const rx = await step(
+        withTimeout(service.getCharacteristic(NUS_RX), GATT_DISCOVER_TIMEOUT_MS, "Finding RX"),
+      );
       tx.addEventListener("characteristicvaluechanged", this.onValue);
       this.tx = tx;
       // Encrypted characteristic: on a first connection this is where pairing (§4) happens.
@@ -113,7 +149,9 @@ export class WebBluetoothTransport implements Transport {
     } catch (e) {
       if (epoch === this.epoch) {
         this.dropLink();
-        if (gatt.connected) gatt.disconnect();
+        // Also when not connected yet: disconnect() cancels a gatt.connect() still pending, so
+        // the next attempt starts clean.
+        gatt.disconnect();
       }
       throw e instanceof Error ? e : new Error(String(e));
     } finally {
