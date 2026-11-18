@@ -87,4 +87,7 @@ applyTheme();
 document.querySelector<HTMLDivElement>("#app")!.append(header.el, nav, main);
 renderAll();
 
-if (new URLSearchParams(location.search).get("mock") === "1") void app.connectMock();
+const params = new URLSearchParams(location.search);
+// ?debug=1 exposes the app on window (for browser checks); ?fast=1 makes the demo device chatty.
+if (params.get("debug") === "1") (window as unknown as { __app: App }).__app = app;
+if (params.get("mock") === "1") void app.connectMock({ fast: params.get("fast") === "1" });

@@ -79,8 +79,9 @@ export class App {
   }
 
   /** Connect to the simulated device (Demo). */
-  async connectMock(): Promise<void> {
-    await this.connectWith(new MockTransport({ autoRx: true, connectDelayMs: 400 }), true);
+  async connectMock(opts: { fast?: boolean } = {}): Promise<void> {
+    const rx = opts.fast ? { rxMinMs: 300, rxMaxMs: 900 } : {};
+    await this.connectWith(new MockTransport({ autoRx: true, connectDelayMs: 400, ...rx }), true);
   }
 
   /** Real Bluetooth arrives with work 5 (webBluetooth.ts). */
