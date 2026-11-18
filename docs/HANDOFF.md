@@ -55,27 +55,39 @@
 
 ## 作業 4 の結果(完了。モックで確認済み)
 
-`?mock=1`(または接続画面の「Demo」)で全画面が動く。`?fast=1` でモックの受信が 0.3〜0.9 秒ごとになり、`?debug=1` で `window.__app` が使える(確認用)。
+`?mock=1`(または接続画面の「Demo」)で全画面が動く。`?fast=1` でモックの受信が 0.3〜0.9 秒ごとになり、`?debug=1` で `window.__app` が使える(確認用。dev サーバーか `VITE_ENABLE_DEBUG=1` のビルドだけ)。
 
 - 土台: `src/store/state.ts`(`App`: client、feed(上限は prefs の `logLimit`)、stations)、`src/store/prefs.ts`(localStorage、try/catch、値の検証つき)、`src/ui/view.ts`(`View` = `el` + `render()`。render は差分更新。1 秒ごとと状態変化で呼ばれる)、`dom.ts`、`format.ts`、`dialog.ts`(`confirmDialog`)、`header.ts`(TX バッジ。接続していないとき、status が古いときは「TX ?」。古い ready を出さない)、`connectView.ts`(パスキーの案内つき)、`statusView.ts`
 - Feed(`feedView.ts`、純粋関数は `feedFormat.ts`): 古い順、`seq` で差分追加、DOM は最新 300 行まで、詳細の展開、フィルター(方向、種別、発信元)、Clear、JSON / TNC2 ログの書き出し(保持している全件)
 - Stations / Radar(`stationList.ts`、`radarGeometry.ts`、`stationDetail.ts`): 並べ替えとフィルター、SVG のレーダー(対数/線形、範囲 5〜500 km、点は形と色で区別、範囲外は縁に表示)
 - Settings(`settingsView.ts`、`settingsForm.ts`、`widgets/`): schema から作るフォームと既知項目の専用部品。保存は Save だけ(差分を 1 回で送る)。確認が要る変更(callsign の変更、`tx_enabled: true`)と Reset は `confirmDialog` を通り、見せた値と送る値は同じ(`executeSave`)。`mice_message` は 0〜6 の選択肢のみ。App preferences(テーマ、フィードの保存件数)と About
-- テスト 22 ファイル 662 件。`npm run typecheck`、`lint`、`test`、`build` が通る。画面は Chromium(DevTools プロトコル)で、ライト/ダーク、幅 360 と 412 を確認した
+- テスト 29 ファイル 878 件(レビューの修正後)。`npm run typecheck`、`lint`、`test`、`build` が通る。画面は Chromium(DevTools プロトコル)で、ライト/ダーク、幅 360 と 412 を確認した
 
-### 作業 4 の既知の課題(小さいもの)
+### 作業 4 の敵対的レビューと修正(完了)
 
-- Stations の「recent」順は、受信のたびに行が並べ替わる(タップの瞬間に動く可能性)
-- 幅 360px で、ヘッダーのバッジとステータス文が 2 行になる(sticky なので、スクロール中に先頭の行が少し隠れる)
-- Settings の固定の Save バーが縦に大きい(スマホで約 150px)
-- レーダーのリングの距離ラベルと局のラベルが重なることがある
-- Reset の結果で `tx_enabled` が true になりうる(既定値はファームウェアの値。Reset の確認ダイアログと、結果が true のときの赤字の警告で扱っている)
-- ヘッダーの callsign は、保存の直後は次の `status`(最大 5 秒)まで古い
-- 接続画面の「Connect to device」は未実装(作業 5)
+3 つのサブエージェントで UI を敵対的にレビューし(Settings と送信の安全、Feed/Stations/Radar、土台と横断)、見つかった High 3 件と Medium の大半を直した。Critical はなく、**確認なしで送信できる経路は見つからなかった**。決めたこと:
+
+- **SSID の変更は常に確認する**(`tx_ready` や `tx_enabled` に関係なく。`SettingsRisk` に `"ssid"`)。確認の順序は callsign → ssid → tx_enable
+- **切断中は読み取り専用で使える**: 切断後も feed と stations が残り、タブが使える(Feed の書き出しも)。Status の先頭に接続カード。Settings は入力と Save/Reset が無効(App preferences と About は使える)
+- 局の位置は `position` と Mic-E のパケットからだけ採る(オブジェクト、サードパーティ、ステータスのグリッドでは動かさない)
+- 受信履歴は、Clear したときと、別の端末(Demo と実機を含む)に接続したときだけ消える。`app.disconnectKind`("user"|"link")、`app.recentErrors`(`deviceError` は `notice` に入れない)、`connectWith(transport: Transport, mock)` は public(作業 5 で使う。接続の試行は直列化済み)
+- `client.statusStale` は時計でも判定する。`tx_ready` が欠けた status は「TX ?」。Demo はヘッダーに DEMO、TX は SIMULATED で、実機の TX READY と見分けられる
+- 設定の保存と Reset の流れは DOM を使わない `settingsController.ts` と `executeSave`/`executeReset`(`settingsForm.ts`)にあり、確認を迂回できないことをテストと変異テストで確かめた。デバイスから来る schema の `pattern` は実行しない(ReDoS 対策。表示するだけ)
+- Radar のタップは最近傍の選択。Stations は行にフォーカスがある間などは並び順を固定する。Feed の Clear は確認つき、TNC2 ログは既定で rx だけ、JSON はデバイスのキーを `msg` にネスト(`version` 1)
+- `index.html` に厳しい CSP(インラインなし)。`vite.config.ts` は `npm run dev` のときだけ CSP の meta を外す(作業 6 で PWA の設定を足すときにマージする)。`public/theme-init.js` は FOUC 対策。`.prettierignore` で `npm run format` が `docs/spec-src` に触れない
+- `window.__app`(`?debug=1`)は、dev サーバーか `VITE_ENABLE_DEBUG=1` を付けたビルドだけ。通常の `npm run build` では出ない
+
+### 作業 4 の未解決・未確認
+
+- 作業 5 で確認すること: `requestDevice` はクリックの中で同期的に呼ぶ(`connectWith` の `await` の後だと、Chrome のユーザー操作の有効期間(約 5 秒)を超えうる)。自動再接続は `App`/同じ `DeviceClient` の `start()` 再呼び出しで作る(置き場所はコメントにある)。`Transport` に `deviceId`(`BluetoothDevice.id`)を入れる
+- Android 実機で未確認: 戻るボタン(タブは `#hash` と `pushState`)、pull-to-refresh の抑止、`proto_mismatch` と `handshaking` の画面
+- 未対応(Low): `theme-color` はアプリ内のテーマ選択に連動しない。ヘッダーの callsign は、保存の直後は次の `status`(最大 5 秒)まで古い。Reset の結果で `tx_enabled` が true になりうる(Reset の確認と、結果が true のときの警告で扱っている)
+- 公開前: `docs/HANDOFF.md` と `docs/plan.md` にホスト名、SSH ポート、鍵のファイル名がある(履歴にも残る。CLAUDE.md が消すと指示しているのは plan.md だけ)。公開するなら、履歴を書き換えるか、新しいリポジトリで公開する。サブモジュールの URL は非公開の可能性がある。`npm audit` は開発時のツールだけ(成果物には入らない)
+- 仕様側(`pico2_aprs`)に伝えるべき点(Issue は未作成): §8.4 の `station.src` はオブジェクトでは「オブジェクト名」、§8.2 の `rx.src` は常に送信局で、`stations.list` と rx から局を作るときにキーの意味が食い違う
 
 ### 画面を確認する方法(この環境)
 
-この環境の Chromium は `http://127.0.0.1` のページを読み込めない。`npx vite build --base=./ --outDir <dir>` で作り、`file://` で開く。DevTools プロトコルでスクリーンショットとコンソールを取る(スクリプトはスクラッチにあり、リポジトリにはない。必要なら `tools/` に入れる)。
+この環境の Chromium は `http://127.0.0.1` のページを読み込めない。`VITE_ENABLE_DEBUG=1 npx vite build --base=./ --outDir <dir> --emptyOutDir` で作り、`file://` で開く。DevTools プロトコルでスクリーンショットとコンソールを取る(スクリプトはスクラッチにあり、リポジトリにはない。必要なら `tools/` に入れる)。
 
 ## 次にやること(作業 5: Web Bluetooth)
 
