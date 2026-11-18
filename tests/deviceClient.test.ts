@@ -1066,3 +1066,100 @@ describe("M10: details the mutation tests showed to be unprotected", () => {
     expect(lines.filter((l) => l.op === "status")).toHaveLength(2);
   });
 });
+
+describe("restart after the link dropped (where auto-reconnect will hook in)", () => {
+  it("start() on the same client runs hello -> status -> schema -> settings -> stations again", async () => {
+    await ready();
+    const first = lines.map((l) => l.op);
+    expect(first).toEqual(["hello", "status", "settings.schema", "settings.get", "stations.list"]);
+    transport.simulateDisconnect("link lost");
+    expect(client.state).toBe("disconnected");
+    expect(client.lastDisconnectReason).toBe("link lost");
+    lines.length = 0;
+    const hello = vi.fn();
+    client.on("hello", hello);
+    await ready();
+    expect(client.state).toBe("ready");
+    expect(lines.map((l) => l.op)).toEqual(first);
+    expect(hello).toHaveBeenCalledTimes(1);
+    expect(client.settingsKnown).toBe(true);
+    expect(client.lastDisconnectReason).toBeUndefined();
+  });
+});
+
+describe("M4: statusStale reads the clock", () => {
+  it("is true without a status, false after one, and true when the clock moved on but no timer ran", async () => {
+    expect(client.statusStale).toBe(true);
+    await ready();
+    expect(client.statusStale).toBe(false);
+    vi.setSystemTime(Date.now() + 14_000);
+    expect(client.statusStale).toBe(false);
+    vi.setSystemTime(Date.now() + 2_000); // 16 s: the timers never ran (a sleeping tab)
+    expect(client.statusStale).toBe(true);
+  });
+
+  it("still emits statusStale when the timer fires, and false again on a new status", async () => {
+    setup({ statusIntervalMs: 60_000 });
+    await ready();
+    const events: boolean[] = [];
+    client.on("statusStale", (v) => events.push(v));
+    await vi.advanceTimersByTimeAsync(15_001);
+    expect(events).toEqual([true]);
+    expect(client.statusStale).toBe(true);
+    await client.getStatus(); // a reply counts as a status too
+    expect(events).toEqual([true, false]);
+    expect(client.statusStale).toBe(false);
+  });
+});
+
+describe("status follows a change of the settings (§8.1)", () => {
+  const statuses: StatusMsg[] = [];
+  beforeEach(async () => {
+    statuses.length = 0;
+    await ready();
+    client.on("status", (s) => statuses.push(s));
+  });
+
+  it("sends one status about 20 ms after tx_enabled changed", async () => {
+    await client.setSettings({ tx_enabled: true }, { confirmed: ["tx_enable"] });
+    expect(statuses).toHaveLength(0); // after the reply, not before
+    await vi.advanceTimersByTimeAsync(19);
+    expect(statuses).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(2);
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0]).toMatchObject({ tx_enabled: true });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(statuses).toHaveLength(1);
+  });
+
+  it("sends one status for a change of callsign and ssid together", async () => {
+    await client.setSettings({ callsign: "Q1NEW", ssid: 3 }, { confirmed: ["callsign", "ssid"] });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0]!.call).toBe("Q1NEW-3");
+  });
+
+  it("sends none when nothing the status shows changed", async () => {
+    await client.setSettings({ comment: "other text" });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(statuses).toHaveLength(0);
+  });
+
+  it("sends one after a reset that changes tx_enabled", async () => {
+    await client.setSettings({ tx_enabled: true }, { confirmed: ["tx_enable"] });
+    await vi.advanceTimersByTimeAsync(100);
+    statuses.length = 0;
+    await client.resetSettings({ confirmed: true });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0]).toMatchObject({ tx_enabled: false });
+  });
+
+  it("sends one when a test changes the switch and asks for a check", async () => {
+    transport.device.sw = false;
+    transport.checkStatusChange();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0]!.sw).toBe(false);
+  });
+});

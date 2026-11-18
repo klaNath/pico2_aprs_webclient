@@ -14,6 +14,12 @@
  * - `write()` must reject (not resolve) when the write did not complete.
  */
 export interface Transport {
+  /**
+   * Identifies the remote device across connections (for Web Bluetooth: `BluetoothDevice.id`).
+   * Optional. The app keeps the feed when it connects to the same device again and clears it for
+   * another one; without an id it falls back to what `hello` says.
+   */
+  readonly deviceId?: string;
   /** Connect, pair and start notifications. See the contract above. */
   connect(): Promise<void>;
   disconnect(): Promise<void>;

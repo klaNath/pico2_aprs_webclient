@@ -36,6 +36,8 @@ export type ClientState =
 
 export type ClientEvents = {
   state: ClientState;
+  /** The device answered `hello` and its protocol version is the one this app speaks. */
+  hello: HelloMsg;
   status: StatusMsg;
   /** The status became stale (no `status` for STATUS_STALE_MS) or fresh again. */
   statusStale: boolean;
@@ -223,6 +225,7 @@ export class DeviceClient extends Emitter<ClientEvents> {
         await this.transport.disconnect().catch(noop);
         throw e;
       }
+      this.emit("hello", hello);
       // The first status event is sent on authentication and may arrive before notifications
       // are started (§6.2), so ask for the state explicitly.
       await this.getStatus();
@@ -269,9 +272,15 @@ export class DeviceClient extends Emitter<ClientEvents> {
     this.clearListeners();
   }
 
-  /** True when no `status` arrived recently (or none at all since connecting). */
+  /**
+   * True when no `status` arrived recently (or none at all since connecting). The clock is read
+   * here too: when the tab is in the background or the device sleeps, the timer behind the
+   * `statusStale` event runs late, and a getter that trusted the flag alone would still say the
+   * old `tx_ready` is current.
+   */
   get statusStale(): boolean {
-    return this.lastStatus === undefined || this.staleFlag;
+    if (this.lastStatus === undefined || this.staleFlag) return true;
+    return this.lastStatusAt === undefined || Date.now() - this.lastStatusAt > STATUS_STALE_MS;
   }
 
   /** True when `settings` holds values the device reported and that no failed save has put in doubt. */

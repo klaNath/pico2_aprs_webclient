@@ -25,6 +25,9 @@ export interface MockTransportOptions {
   writeDelayMs?: number;
 }
 
+/** §8.1: a change of fix, sw, tx_ready, tx_enabled or call is sent as a status about this long later. */
+const STATUS_CHANGE_DELAY_MS = 20;
+
 /** The real limit (§5.2). Written out here on purpose, not imported, so that a change of the app's constant is caught. */
 const DEVICE_MAX_WRITE_BYTES = 20;
 
@@ -55,6 +58,9 @@ export class MockTransport implements Transport {
   private readonly encoder = new TextEncoder();
   private timers = new Set<ReturnType<typeof setTimeout>>();
   private statusTimer: ReturnType<typeof setInterval> | undefined;
+  /** The fields of §8.1 whose change triggers a status event, as of the last check. */
+  private statusKey = "";
+  private statusChangeTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(options: MockTransportOptions = {}) {
     this.device = options.device ?? new MockDevice();
@@ -69,6 +75,11 @@ export class MockTransport implements Transport {
       connectDelayMs: options.connectDelayMs ?? 0,
     };
     this.writeDelayMs = options.writeDelayMs ?? 0;
+  }
+
+  /** True while the link is up (connected and not yet disconnected). For tests. */
+  get isConnected(): boolean {
+    return this.connected;
   }
 
   connect(): Promise<void> {
@@ -149,7 +160,29 @@ export class MockTransport implements Transport {
         continue;
       }
       for (const out of this.device.handleLine(line)) this.notify(out);
+      this.checkStatusChange();
     }
+  }
+
+  /**
+   * Like the device (§8.1): when `fix`, `sw`, `tx_ready`, `tx_enabled` or `call` changed since the
+   * last check, one `status` event follows about 20 ms later. Called after every request; a test
+   * that changes `device.sw` or `device.fix` itself calls it too.
+   */
+  checkStatusChange(): void {
+    const key = this.currentStatusKey();
+    if (key === this.statusKey) return;
+    this.statusKey = key;
+    if (!this.connected || !this.authenticated || this.statusChangeTimer !== undefined) return;
+    this.statusChangeTimer = setTimeout(() => {
+      this.statusChangeTimer = undefined;
+      this.notify(JSON.stringify(this.device.status()));
+    }, STATUS_CHANGE_DELAY_MS);
+  }
+
+  private currentStatusKey(): string {
+    const { fix, sw, tx_enabled, tx_ready, call } = this.device.status();
+    return JSON.stringify([fix, sw, tx_enabled, tx_ready, call]);
   }
 
   onData(cb: (chunk: Uint8Array) => void): () => void {
@@ -205,6 +238,7 @@ export class MockTransport implements Transport {
 
   private onAuthenticated(): void {
     this.authenticated = true;
+    this.statusKey = this.currentStatusKey();
     this.notify(JSON.stringify(this.device.status())); // status right after connecting
     this.statusTimer = setInterval(
       () => this.notify(JSON.stringify(this.device.status())),
@@ -238,6 +272,8 @@ export class MockTransport implements Transport {
   }
 
   private cleanup(): void {
+    clearTimeout(this.statusChangeTimer);
+    this.statusChangeTimer = undefined;
     for (const t of this.timers) clearTimeout(t);
     this.timers.clear();
     if (this.statusTimer !== undefined) clearInterval(this.statusTimer);

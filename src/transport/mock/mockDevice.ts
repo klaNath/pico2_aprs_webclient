@@ -53,6 +53,8 @@ export class MockDevice {
   ];
 
   /** Test knobs. */
+  /** `hello.name`; a different value makes the app treat this as another device. */
+  helloName = "pico2_aprs";
   failNextSave = false;
   protoOverride: number | undefined;
 
@@ -107,7 +109,7 @@ export class MockDevice {
           withId({
             t: "hello",
             proto: this.protoOverride ?? PROTO_VERSION,
-            name: "pico2_aprs",
+            name: this.helloName,
             mode: "tnc",
           }),
         ];
