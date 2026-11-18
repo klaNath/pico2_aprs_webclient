@@ -93,13 +93,16 @@ export function createSettingsView(app: App): View {
     on: { click: () => controller.revert() },
   });
   const reloadBtn = h("button", {
-    class: "btn",
+    class: "btn btn-small",
     text: "Reload from device",
     attrs: { type: "button" },
     on: { click: () => void controller.reload() },
   });
-  const buttons = h("div", { class: "row" }, saveBtn, revertBtn, reloadBtn);
-  const actions = h("div", { class: "sf-actions" }, deviceMsg, summary, buttons);
+  // The bar is pinned to the bottom of the screen, so it is kept short: the summary and the small
+  // Reload button share a line, and Save and Revert share another.
+  const top = h("div", { class: "sf-actions-top" }, summary, reloadBtn);
+  const buttons = h("div", { class: "sf-actions-main" }, saveBtn, revertBtn);
+  const actions = h("div", { class: "sf-actions" }, deviceMsg, top, buttons);
 
   const device = h("div", { class: "sf-device" }, guide, unknownBox, groups, actions);
 
