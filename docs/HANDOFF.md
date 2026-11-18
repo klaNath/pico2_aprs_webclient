@@ -53,16 +53,41 @@
 - 仕様側への指摘(`pico2_aprs` 側で検討してほしい): (1) 書き込みがチャンクの途中で失敗したとき、本機側に行の断片が残る。空行で破棄するなどの再同期の手段がない (2) `busy` で落とされた行が部分的にでも処理されたか、再送が安全か(`settings.set` が冪等か)の記載がない (3) §9.1 の `callsign` が小文字を拒否するのか変換するのか不明(`path` は変換と明記) (4) `callsign` が null のときの `status.call` の値がない (5) 最初の書き込みがパスキー入力の完了までブロックするか(U3)が未確認
 - 未確認のまま残した点: 圧縮気象の cs の風速の単位、雪量 `s` の単位、シンボル表は WB4APR のマスターリスト(http://www.aprs.org/symbols/symbolsX.txt、2015-11-25)と全 194 行を機械的に突き合わせ済み(割り当ての有無はすべて一致。画像のチャート https://blog.thelifeofkenneth.com/2017/01/aprs-symbol-look-up-table.html も参考にした)。AVAIL/TBD/予約のコードは未登録(`known:false`)で、旧気象コード(副表の `* : B F G J b p {`)と主表の `0`〜`9`(番号つきの丸)だけは意図して残した。オーバーレイの定義(`symbols-new.txt`)は未対応。日本語コメントの文字コード判定は、Windows-1252 のスマートクォートが 2 つ以上あると Shift_JIS と誤検知しうる
 
-## 次にやること(作業 4: UI)
+## 作業 4 の結果(完了。モックで確認済み)
 
-plan.md の構成と「作業の順序」4 に従う。ヘッダーとステータス → フィード → 局の一覧 → レーダー → 設定 の順。モック(`?mock=1`、接続画面の「Demo」)で確かめる。
+`?mock=1`(または接続画面の「Demo」)で全画面が動く。`?fast=1` でモックの受信が 0.3〜0.9 秒ごとになり、`?debug=1` で `window.__app` が使える(確認用)。
 
-- 土台: `DeviceClient`(`src/client/`)と `MockTransport`(`src/transport/mock/`)。UI は `client.on("status" | "rx" | "tx" | "stations" | "settings" | ...)` を購読する。雛形の `src/main.ts`、`counter.ts`、`style.css`、`src/assets/` はここで置き換える
-- フィードの詳細は `parseAprs(rx.tnc2)`、局の一覧の距離と方位は `geo.ts`(自局は `status` の `lat`/`lon`)、レーダーの色は `symbolInfo().category`
-- 安全(CLAUDE.md): `tx_ready` を常に見える場所に表示する。`tx_enabled` を true にするとき、callsign を変えるとき、reset のときは確認ダイアログを出す。`mice_message` は 0〜6 だけ選べる(`MICE_MESSAGES`)
-- 設定画面は schema を基本に、既知の項目(`KNOWN_SETTINGS`)には専用の部品を使う。差分だけを `client.setSettings()` で 1 回送る(押したときだけ。キー入力ごとに送らない)。確認が要る変更は `requiredConfirmations()` → ダイアログ → `setSettings(values, { confirmed })` の順
+- 土台: `src/store/state.ts`(`App`: client、feed(上限は prefs の `logLimit`)、stations)、`src/store/prefs.ts`(localStorage、try/catch、値の検証つき)、`src/ui/view.ts`(`View` = `el` + `render()`。render は差分更新。1 秒ごとと状態変化で呼ばれる)、`dom.ts`、`format.ts`、`dialog.ts`(`confirmDialog`)、`header.ts`(TX バッジ。接続していないとき、status が古いときは「TX ?」。古い ready を出さない)、`connectView.ts`(パスキーの案内つき)、`statusView.ts`
+- Feed(`feedView.ts`、純粋関数は `feedFormat.ts`): 古い順、`seq` で差分追加、DOM は最新 300 行まで、詳細の展開、フィルター(方向、種別、発信元)、Clear、JSON / TNC2 ログの書き出し(保持している全件)
+- Stations / Radar(`stationList.ts`、`radarGeometry.ts`、`stationDetail.ts`): 並べ替えとフィルター、SVG のレーダー(対数/線形、範囲 5〜500 km、点は形と色で区別、範囲外は縁に表示)
+- Settings(`settingsView.ts`、`settingsForm.ts`、`widgets/`): schema から作るフォームと既知項目の専用部品。保存は Save だけ(差分を 1 回で送る)。確認が要る変更(callsign の変更、`tx_enabled: true`)と Reset は `confirmDialog` を通り、見せた値と送る値は同じ(`executeSave`)。`mice_message` は 0〜6 の選択肢のみ。App preferences(テーマ、フィードの保存件数)と About
+- テスト 22 ファイル 662 件。`npm run typecheck`、`lint`、`test`、`build` が通る。画面は Chromium(DevTools プロトコル)で、ライト/ダーク、幅 360 と 412 を確認した
 
-その後は plan.md の順(作業 5: Web Bluetooth → 6: PWA と Pages)。
+### 作業 4 の既知の課題(小さいもの)
+
+- Stations の「recent」順は、受信のたびに行が並べ替わる(タップの瞬間に動く可能性)
+- 幅 360px で、ヘッダーのバッジとステータス文が 2 行になる(sticky なので、スクロール中に先頭の行が少し隠れる)
+- Settings の固定の Save バーが縦に大きい(スマホで約 150px)
+- レーダーのリングの距離ラベルと局のラベルが重なることがある
+- Reset の結果で `tx_enabled` が true になりうる(既定値はファームウェアの値。Reset の確認ダイアログと、結果が true のときの赤字の警告で扱っている)
+- ヘッダーの callsign は、保存の直後は次の `status`(最大 5 秒)まで古い
+- 接続画面の「Connect to device」は未実装(作業 5)
+
+### 画面を確認する方法(この環境)
+
+この環境の Chromium は `http://127.0.0.1` のページを読み込めない。`npx vite build --base=./ --outDir <dir>` で作り、`file://` で開く。DevTools プロトコルでスクリーンショットとコンソールを取る(スクリプトはスクラッチにあり、リポジトリにはない。必要なら `tools/` に入れる)。
+
+## 次にやること(作業 5: Web Bluetooth)
+
+plan.md の「作業の順序」5 に従う。`src/transport/webBluetooth.ts` を作り(`Transport` の契約は `src/transport/transport.ts` のコメント)、`App.connectBluetooth()`(`state.ts`)をつなぐ。
+
+- NUS のサービス UUID で `requestDevice`、`getDevices` で再接続、`startNotifications`、書き込みは `writeValueWithResponse` で 20 バイト以下、1 回ごとに完了を待つ(§5.2)。名前 `PicoAPRS-XXXX` は表示に使い、絞り込みには使わない(§2)
+- 自動再接続と指数バックオフ(切断後に §6.2 の流れを最初から)。接続中は広告しないので、別の端末が接続中だと見つからない
+- U3(Chrome でペアリングダイアログが出るか)は Android で確認し、結果を `klaNath/pico2_aprs` の Issue #5 に書く。結果で `connectView.ts` の案内文を変える
+- `adb reverse` と `chrome://inspect`(S7)で Android の Chrome を使う。Windows の Chrome は U8 のため保留
+- 作業 4 の既知の課題の解消は、このあとでもよい
+
+その後は plan.md の順(作業 6: PWA と Pages)。
 
 ## 環境の注意
 
