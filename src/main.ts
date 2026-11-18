@@ -1,60 +1,90 @@
-import './style.css'
-import heroImg from './assets/hero.png'
-import typescriptLogo from './assets/typescript.svg'
-import viteLogo from './assets/vite.svg'
-import { setupCounter } from './counter.ts'
+// Entry point: builds the header, the tab bar and the views, and drives rendering.
 
-document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
-<section id="center">
-  <div class="hero">
-    <img src="${heroImg}" class="base" width="170" height="179">
-    <img src="${typescriptLogo}" class="framework" alt="TypeScript logo"/>
-    <img src="${viteLogo}" class="vite" alt="Vite logo" />
-  </div>
-  <div>
-    <h1>Get started</h1>
-    <p>Edit <code>src/main.ts</code> and save to test <code>HMR</code></p>
-  </div>
-  <button id="counter" type="button" class="counter"></button>
-</section>
+import "./style.css";
+import { App } from "./store/state.ts";
+import { createConnectView, needsConnect } from "./ui/connectView.ts";
+import { h } from "./ui/dom.ts";
+import { createFeedView } from "./ui/feedView.ts";
+import { createHeader } from "./ui/header.ts";
+import { createRadarView } from "./ui/radarView.ts";
+import { createSettingsView } from "./ui/settingsView.ts";
+import { createStationsView } from "./ui/stationsView.ts";
+import { createStatusView } from "./ui/statusView.ts";
+import type { View } from "./ui/view.ts";
 
-<div class="ticks"></div>
+const app = new App();
 
-<section id="next-steps">
-  <div id="docs">
-    <svg class="icon" role="presentation" aria-hidden="true"><use href="/icons.svg#documentation-icon"></use></svg>
-    <h2>Documentation</h2>
-    <p>Your questions, answered</p>
-    <ul>
-      <li>
-        <a href="https://vite.dev/" target="_blank">
-          <img class="logo" src="${viteLogo}" alt="" />
-          Explore Vite
-        </a>
-      </li>
-      <li>
-        <a href="https://www.typescriptlang.org" target="_blank">
-          <img class="button-icon" src="${typescriptLogo}" alt="">
-          Learn more
-        </a>
-      </li>
-    </ul>
-  </div>
-  <div id="social">
-    <svg class="icon" role="presentation" aria-hidden="true"><use href="/icons.svg#social-icon"></use></svg>
-    <h2>Connect with us</h2>
-    <p>Join the Vite community</p>
-    <ul>
-      <li><a href="https://github.com/vitejs/vite" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#github-icon"></use></svg>GitHub</a></li>
-      <li><a href="https://chat.vite.dev/" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#discord-icon"></use></svg>Discord</a></li>
-      <li><a href="https://x.com/vite_js" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#x-icon"></use></svg>X.com</a></li>
-      <li><a href="https://bsky.app/profile/vite.dev" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#bluesky-icon"></use></svg>Bluesky</a></li>
-    </ul>
-  </div>
-</section>
+const TABS = [
+  { id: "status", label: "Status", make: createStatusView },
+  { id: "feed", label: "Feed", make: createFeedView },
+  { id: "stations", label: "Stations", make: createStationsView },
+  { id: "radar", label: "Radar", make: createRadarView },
+  { id: "settings", label: "Settings", make: createSettingsView },
+] as const;
+type TabId = (typeof TABS)[number]["id"];
 
-<div class="ticks"></div>
-<section id="spacer"></section>
-`
+const views = new Map<TabId, View>(TABS.map((t) => [t.id, t.make(app)]));
+const header = createHeader(app);
+const connect = createConnectView(app);
 
-setupCounter(document.querySelector<HTMLButtonElement>('#counter')!)
+let current: TabId = "status";
+const tabButtons = new Map<TabId, HTMLButtonElement>();
+const main = h("main", { class: "app-main" });
+const nav = h("nav", { class: "tabs", attrs: { role: "tablist" } });
+for (const t of TABS) {
+  const b = h("button", {
+    class: "tab",
+    text: t.label,
+    attrs: { type: "button", role: "tab" },
+    on: { click: () => select(t.id) },
+  });
+  tabButtons.set(t.id, b);
+  nav.append(b);
+}
+
+function applyTheme(): void {
+  const theme = app.prefs.get("theme");
+  if (theme === "auto") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = theme;
+}
+
+function select(id: TabId): void {
+  current = id;
+  renderAll();
+}
+
+function renderAll(): void {
+  header.render();
+  const showConnect = needsConnect(app.state);
+  nav.hidden = showConnect;
+  const want = showConnect ? connect : views.get(current);
+  if (want && main.firstElementChild !== want.el) main.replaceChildren(want.el);
+  want?.render();
+  for (const [id, b] of tabButtons) {
+    b.setAttribute("aria-selected", String(id === current));
+    b.classList.toggle("tab-active", id === current);
+  }
+}
+
+let frame = 0;
+function schedule(): void {
+  if (frame) return;
+  frame = requestAnimationFrame(() => {
+    frame = 0;
+    renderAll();
+  });
+}
+
+app.onChange(schedule);
+app.prefs.onChange(() => {
+  applyTheme();
+  schedule();
+});
+// Ages ("2 min ago") and the beacon countdown change without any event.
+setInterval(schedule, 1000);
+
+applyTheme();
+document.querySelector<HTMLDivElement>("#app")!.append(header.el, nav, main);
+renderAll();
+
+if (new URLSearchParams(location.search).get("mock") === "1") void app.connectMock();
