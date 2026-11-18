@@ -1,13 +1,12 @@
-# Builds the app and publishes it to GitHub Pages.
+# Builds the app and publishes it to GitHub Pages (Settings > Pages > Source: GitHub Actions).
 #
-# Manual only (Run workflow) until Pages is switched on for this repository: Settings > Pages >
-# Source: GitHub Actions. A push-triggered run would fail on every push before that. When Pages
-# is ready, add `push: { branches: [main] }` under `on:`.
-#
-# The site is public, even when the repository is private. Read docs/HANDOFF.md ("公開前") first.
+# Runs on every push to main, and by hand (Run workflow). A deploy only happens when typecheck,
+# lint and the tests pass. The site is public.
 name: Deploy to GitHub Pages
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:

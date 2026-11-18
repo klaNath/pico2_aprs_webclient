@@ -122,14 +122,14 @@
 5. 戻るボタンと pull-to-refresh の抑止(作業 4 の未確認)を確かめる。`PAIRING_HINT` と接続待ちの表示には「通知の『Pairing request』を開く」を足した(Android 実機で表示を確認済み。「Do it soon, because the tracker drops a connection that stays unpaired」は、ファームウェア側の 60 秒の切断が実機では未確認のままの記述)
 6. 仕様 v0.4 への対応(2026-11-18 に済み。下の「仕様 v0.4 への対応」)。残りは実機での確認: `hello` の再送が 60 秒続くこと、書き込み失敗後の `\n`(§5.3)の挙動
 
-### 作業 6(PWA と Pages): 実装と配信まで済み(自動配信は未設定)
+### 作業 6(PWA と Pages): 実装、配信、自動配信まで済み
 
 - 実装済み(2026-11-18): `vite-plugin-pwa`(`vite.config.ts`。`registerType: "prompt"`、`injectRegister: false`、generateSW、precache のみ、`navigateFallback`)。`base: "./"`(Pages の `/<repo>/` でも、`file://` でも動く)。manifest(standalone、`start_url`/`scope`/`id` は `./`、テーマ色 `#0f141b`)。アイコンは `public/` の `favicon.svg`(レーダーの図。Vite の雛形のロゴから差し替え)、`icon-192.png`、`icon-512.png`(maskable も兼ねる。中身は安全域の内側)、`apple-touch-icon.png`。`public/icons.svg`(雛形の残り)は削除
 - 更新は自動で行わない: `src/pwa.ts` が登録し、新しい版が待機すると `src/ui/updateBanner.ts` の案内「A new version is available.」と「Update」ボタン(接続中は「接続が切れる」と書く)。初回だけ「オフラインで動く」の案内(Dismiss)。本番ビルドのときだけ登録する(dev は登録しない)
 - 実機で確認(Android 11、Chrome 157、`vite preview` を `adb reverse` 経由): service worker が activated、precache 済み、サーバーを止めてリロードしても起動する(`controller` あり)、「オフラインで動く」の案内が出る。確認していない: ホーム画面への追加(インストール)、更新の流れ(新しい版を出して「Update」を押す)
 - 公開サイト https://klanath.github.io/pico2_aprs_webclient/(workflow を手動で実行して配信。2026-11-19): Android の Chrome で service worker が activated、precache 10 件、`installabilityErrors` は空(インストール可能)、通信を切ってリロードしても起動(`controlled: true`)、Web Bluetooth で実機に接続できた。確認していない: ホーム画面に追加した後の standalone 表示、新しい版が出たときの「Update」
-- `.github/workflows/deploy.yml`: build(typecheck、lint、test、build)と deploy。**手動実行だけ**にしてある(`workflow_dispatch`)。Pages を有効にするまで、push で動かすと毎回失敗するため
-- Pages は有効(Source は GitHub Actions)で、配信済み。workflow は手動実行だけ(`workflow_dispatch`)。残り: `on:` に `push: { branches: [main] }` を足して自動配信にする。`ubuntu-latest` は 2026-10-19 から Ubuntu 26 に移る通知がある(問題が出たら `ubuntu-24.04` などに固定)。サブモジュールの `klaNath/pico2_aprs` も公開されている
+- `.github/workflows/deploy.yml`: build(typecheck、lint、test、build)と deploy。`main` への push と手動実行で動く。typecheck、lint、test が通らなければ配信しない
+- Pages は有効(Source は GitHub Actions)。workflow は `main` への push で自動配信し、手動実行もできる(2026-11-19 から)。`ubuntu-latest` は 2026-10-19 から Ubuntu 26 に移る通知がある(問題が出たら `ubuntu-24.04` などに固定)。サブモジュールの `klaNath/pico2_aprs` も公開されている
 
 ## 仕様 v0.4 への対応(ピンを `f6e3364` → `f8cd818`)
 
