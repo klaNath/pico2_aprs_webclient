@@ -304,6 +304,7 @@ export class DeviceClient extends Emitter<ClientEvents> {
       // Unknown current values: be careful.
       const r: SettingsRisk[] = [];
       if ("callsign" in norm.values) r.push("callsign");
+      if ("ssid" in norm.values) r.push("ssid");
       if (norm.values.tx_enabled === true) r.push("tx_enable");
       return r;
     }

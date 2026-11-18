@@ -212,12 +212,14 @@ export function normalizeSettings(
 }
 
 /** Changes that the UI must have the user confirm before they are sent (CLAUDE.md, transmit safety). */
-export type SettingsRisk = "tx_enable" | "callsign";
+export type SettingsRisk = "tx_enable" | "callsign" | "ssid";
 
 /**
  * Which confirmations does this change need, given the values the device has now?
  * - `tx_enable`: `tx_enabled` goes to true
  * - `callsign`: the callsign changes (including to null)
+ * - `ssid`: the SSID changes. Always, whether or not transmitting is allowed: the SSID is part of the
+ *   identity on the air (CALL-SSID), so the user confirms every change (decided with the owner)
  */
 export function settingsRisks(
   current: Readonly<SettingsValues>,
@@ -227,6 +229,7 @@ export function settingsRisks(
   if ("callsign" in changes && !settingEquals(changes.callsign, current.callsign)) {
     risks.push("callsign");
   }
+  if ("ssid" in changes && !settingEquals(changes.ssid, current.ssid)) risks.push("ssid");
   if (changes.tx_enabled === true && current.tx_enabled !== true) risks.push("tx_enable");
   return risks;
 }

@@ -217,6 +217,25 @@ describe("settingEquals", () => {
   });
 });
 
+describe("settingsRisks: an SSID change is always confirmed", () => {
+  const cur = { callsign: "Q1TEST", tx_enabled: false, ssid: 7 };
+  it.each([
+    ["transmit off", { ...cur, tx_enabled: false }],
+    ["transmit on", { ...cur, tx_enabled: true }],
+    ["no callsign", { ...cur, callsign: null }],
+  ])("flags ssid when %s", (_name, current) => {
+    expect(settingsRisks(current, { ssid: 3 })).toEqual(["ssid"]);
+    expect(settingsRisks(current, { ssid: 0 })).toEqual(["ssid"]);
+  });
+  it("is reported together with the other risks, in a stable order", () => {
+    expect(settingsRisks(cur, { ssid: 1, callsign: "Q1NEW", tx_enabled: true })).toEqual([
+      "callsign",
+      "ssid",
+      "tx_enable",
+    ]);
+  });
+});
+
 describe("settingsRisks (what needs a confirmation dialog)", () => {
   const cur = { callsign: "Q1TEST", tx_enabled: false, ssid: 7 };
 
@@ -232,7 +251,8 @@ describe("settingsRisks (what needs a confirmation dialog)", () => {
 
   it("does not flag what is not a change or is not risky", () => {
     expect(settingsRisks(cur, { callsign: "Q1TEST" })).toEqual([]);
-    expect(settingsRisks(cur, { tx_enabled: false, ssid: 3 })).toEqual([]);
+    expect(settingsRisks(cur, { tx_enabled: false })).toEqual([]);
+    expect(settingsRisks(cur, { ssid: 7 })).toEqual([]); // same SSID: not a change
     expect(settingsRisks({ ...cur, tx_enabled: true }, { tx_enabled: true })).toEqual([]);
   });
 });

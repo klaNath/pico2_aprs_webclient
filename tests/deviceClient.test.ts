@@ -582,6 +582,8 @@ describe("H3: validation and confirmation", () => {
     expect(client.requiredConfirmations({ tx_enabled: true })).toEqual(["tx_enable"]);
     expect(client.requiredConfirmations({ callsign: "Q1TEST", tx_enabled: false })).toEqual([]);
     expect(client.requiredConfirmations({ callsign: null })).toEqual(["callsign"]);
+    expect(client.requiredConfirmations({ ssid: 3 })).toEqual(["ssid"]);
+    expect(client.requiredConfirmations({ ssid: 7 })).toEqual([]);
   });
 
   it("refuses a reset without confirmation (also when the type check is bypassed)", async () => {
@@ -681,7 +683,10 @@ describe("H4: writes are at most 20 bytes (§5.2)", () => {
   it("never writes more than 20 bytes, for any line of the connection flow and a long settings.set", async () => {
     const chunks = recordWrites();
     await ready();
-    await client.setSettings({ comment: "x".repeat(40), path: ["WIDE1-1", "WIDE2-2"], ssid: 3 });
+    await client.setSettings(
+      { comment: "x".repeat(40), path: ["WIDE1-1", "WIDE2-2"], ssid: 3 },
+      { confirmed: ["ssid"] }, // an SSID change is always confirmed
+    );
     expect(chunks.length).toBeGreaterThan(8);
     expect(Math.max(...chunks.map((c) => c.length))).toBe(20); // full 20-byte writes do happen
     expect(chunks.every((c) => c.length <= 20)).toBe(true);
