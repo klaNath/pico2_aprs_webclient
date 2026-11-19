@@ -37,7 +37,10 @@ const TAB_IDS: readonly TabId[] = TABS.map((t) => t.id);
 
 const views = new Map<TabId, View>(TABS.map((t) => [t.id, t.make(app)]));
 const header = createHeader(app);
-const connect = createConnectView(app);
+const params = new URLSearchParams(location.search);
+// ?mock=1 starts the Demo (the only way to start it); ?fast=1 makes the demo device chatty.
+const demo = params.get("mock") === "1" ? { fast: params.get("fast") === "1" } : undefined;
+const connect = createConnectView(app, demo);
 
 // ---- chrome: tabs, banners ---------------------------------------------------------------
 
@@ -219,7 +222,6 @@ try {
 document.querySelector<HTMLDivElement>("#app")!.append(header.el, nav, main);
 renderAll();
 
-const params = new URLSearchParams(location.search);
 // ?debug=1 exposes the whole app on window for browser checks. Only in the dev server or in a
 // build made with VITE_ENABLE_DEBUG=1; a normal build never exposes it.
 if (
@@ -228,7 +230,6 @@ if (
 ) {
   (window as unknown as { __app: App }).__app = app;
 }
-// ?mock=1 starts the Demo; ?fast=1 makes the demo device chatty.
-if (params.get("mock") === "1") void app.connectMock({ fast: params.get("fast") === "1" });
+if (demo) void app.connectMock(demo);
 // Trackers this site was allowed to use before can be reconnected without the chooser.
 else void app.loadKnownDevices();

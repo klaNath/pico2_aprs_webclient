@@ -63,7 +63,7 @@
 
 ## 作業 4 の結果(完了。モックで確認済み)
 
-`?mock=1`(または接続画面の「Demo」)で全画面が動く。`?fast=1` でモックの受信が 0.3〜0.9 秒ごとになり、`?debug=1` で `window.__app` が使える(確認用。dev サーバーか `VITE_ENABLE_DEBUG=1` のビルドだけ)。
+`?mock=1` で全画面が動く(Demo の起動は URL だけ。接続画面のボタンは `?mock=1` のときだけ出る「Restart demo」で、切断後の再開用)。`?fast=1` でモックの受信が 0.3〜0.9 秒ごとになり、`?debug=1` で `window.__app` が使える(確認用。dev サーバーか `VITE_ENABLE_DEBUG=1` のビルドだけ)。
 
 - 土台: `src/store/state.ts`(`App`: client、feed(上限は prefs の `logLimit`)、stations)、`src/store/prefs.ts`(localStorage、try/catch、値の検証つき)、`src/ui/view.ts`(`View` = `el` + `render()`。render は差分更新。1 秒ごとと状態変化で呼ばれる)、`dom.ts`、`format.ts`、`dialog.ts`(`confirmDialog`)、`header.ts`(TX バッジ。接続していないとき、status が古いときは「TX ?」。古い ready を出さない)、`connectView.ts`(パスキーの案内つき)、`statusView.ts`
 - Feed(`feedView.ts`、純粋関数は `feedFormat.ts`): 古い順、`seq` で差分追加、DOM は最新 300 行まで、詳細の展開、フィルター(方向、種別、発信元)、Clear、JSON / TNC2 ログの書き出し(保持している全件)

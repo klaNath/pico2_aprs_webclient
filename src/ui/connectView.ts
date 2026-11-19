@@ -36,8 +36,8 @@ export function connectMessage(info: {
 export function webBluetoothHelp(hasBluetooth: boolean, isSecure: boolean): string | undefined {
   if (hasBluetooth) return undefined;
   return isSecure
-    ? "Web Bluetooth is not available in this browser. Use Chrome on Android. You can still try the demo."
-    : "Web Bluetooth is not available. This page is not on HTTPS (or localhost), which Web Bluetooth requires, and the browser may not support it either. Open the https:// address in Chrome on Android. You can still try the demo.";
+    ? "Web Bluetooth is not available in this browser. Use Chrome on Android."
+    : "Web Bluetooth is not available. This page is not on HTTPS (or localhost), which Web Bluetooth requires, and the browser may not support it either. Open the https:// address in Chrome on Android.";
 }
 
 /** The line about the automatic reconnect, or undefined when there is none. */
@@ -56,7 +56,12 @@ export function reconnectText(
 export const PAIRING_HINT =
   "The first time, your phone may ask you to pair. On Android this can appear only as a notification (“Pairing request”): open it, then enter the 6-digit passkey shown on the tracker's LCD. Type it within 30 seconds of it appearing. If it goes out, or the connection drops after about a minute, connect again for a new passkey.";
 
-export function createConnectView(app: App): View {
+/**
+ * `demo` is set only when the page was opened with `?mock=1`: the Demo starts from the URL, never
+ * from a button on a normal page. In that case a "Restart demo" button brings it back after a
+ * disconnect without reloading.
+ */
+export function createConnectView(app: App, demo?: { fast: boolean }): View {
   const heading = h("h2");
   const intro = h("p", {
     class: "muted",
@@ -70,10 +75,11 @@ export function createConnectView(app: App): View {
   });
   const demoBtn = h("button", {
     class: "btn",
-    text: "Demo (simulated device)",
+    text: "Restart demo",
     attrs: { type: "button" },
-    on: { click: () => void app.connectMock() },
+    on: { click: () => void app.connectMock(demo) },
   });
+  demoBtn.hidden = !demo;
   const cancelBtn = h("button", {
     class: "btn",
     text: "Cancel",
