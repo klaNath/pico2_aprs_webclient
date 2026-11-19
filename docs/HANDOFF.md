@@ -66,7 +66,7 @@
 `?mock=1` で全画面が動く(Demo の起動は URL だけ。接続画面のボタンは `?mock=1` のときだけ出る「Restart demo」で、切断後の再開用)。`?fast=1` でモックの受信が 0.3〜0.9 秒ごとになり、`?debug=1` で `window.__app` が使える(確認用。dev サーバーか `VITE_ENABLE_DEBUG=1` のビルドだけ)。
 
 - 土台: `src/store/state.ts`(`App`: client、feed(上限は prefs の `logLimit`)、stations)、`src/store/prefs.ts`(localStorage、try/catch、値の検証つき)、`src/ui/view.ts`(`View` = `el` + `render()`。render は差分更新。1 秒ごとと状態変化で呼ばれる)、`dom.ts`、`format.ts`、`dialog.ts`(`confirmDialog`)、`header.ts`(TX バッジ。接続していないとき、status が古いときは「TX ?」。古い ready を出さない)、`connectView.ts`(パスキーの案内つき)、`statusView.ts`
-- Feed(`feedView.ts`、純粋関数は `feedFormat.ts`): 古い順、`seq` で差分追加、DOM は最新 300 行まで、詳細の展開、フィルター(方向、種別、発信元)、Clear、JSON / TNC2 ログの書き出し(保持している全件)
+- Feed(`feedView.ts`、純粋関数は `feedFormat.ts`): 新しい順(先頭に追加、下を読んでいる間は位置を保って「N new ↑」)、行は 2 行でコンパクト(要約は 1 行で省略)、`seq` で差分追加、DOM は最新 300 行まで、詳細の展開、フィルター(方向、種別、発信元)、Clear、JSON / TNC2 ログの書き出し(保持している全件)
 - Stations / Radar(`stationList.ts`、`radarGeometry.ts`、`stationDetail.ts`): 並べ替えとフィルター、SVG のレーダー(対数/線形、範囲 5〜500 km、点は形と色で区別、範囲外は縁に表示)
 - Settings(`settingsView.ts`、`settingsForm.ts`、`widgets/`): schema から作るフォームと既知項目の専用部品。保存は Save だけ(差分を 1 回で送る)。確認が要る変更(callsign の変更、`tx_enabled: true`)と Reset は `confirmDialog` を通り、見せた値と送る値は同じ(`executeSave`)。`mice_message` は 0〜6 の選択肢のみ。App preferences(テーマ、フィードの保存件数)と About
 - テスト 29 ファイル 878 件(レビューの修正後)。`npm run typecheck`、`lint`、`test`、`build` が通る。画面は Chromium(DevTools プロトコル)で、ライト/ダーク、幅 360 と 412 を確認した

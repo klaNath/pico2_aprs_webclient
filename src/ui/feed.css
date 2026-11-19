@@ -52,6 +52,12 @@
   padding: 24px var(--gutter);
 }
 
+/* Newest first: feedView.ts keeps the rows being read in place itself when rows are added on top. */
+.feed-list {
+  gap: 4px;
+  overflow-anchor: none;
+}
+
 .feed-item.list-item {
   padding: 0;
   overflow: hidden;
@@ -64,12 +70,13 @@
 .feed-head {
   display: block;
   width: 100%;
-  min-height: 44px;
-  padding: 8px 12px;
+  min-height: 40px;
+  padding: 5px 10px;
   border: 0;
   background: none;
   color: inherit;
   font: inherit;
+  font-size: 0.9rem;
   text-align: left;
   cursor: pointer;
 }
@@ -87,9 +94,9 @@
 }
 
 .feed-dir {
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   font-weight: 700;
-  padding: 1px 7px;
+  padding: 0 6px;
   border-radius: 999px;
   border: 1px solid var(--border);
 }
@@ -132,7 +139,7 @@
 
 .feed-meta {
   margin-left: auto;
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
@@ -148,15 +155,15 @@
 
 .feed-line2 {
   display: flex;
-  align-items: flex-start;
+  align-items: baseline;
   gap: 8px;
-  margin-top: 4px;
+  margin-top: 2px;
 }
 
 .feed-kind {
   flex: none;
-  font-size: 0.75rem;
-  padding: 1px 7px;
+  font-size: 0.7rem;
+  padding: 0 6px;
   border-radius: 6px;
   background: var(--unknown-bg);
   color: var(--unknown);
@@ -165,17 +172,15 @@
 .feed-summary {
   flex: 1 1 auto;
   min-width: 0;
-  overflow-wrap: anywhere;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
+  white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .feed-open .feed-summary {
-  display: block;
+  white-space: normal;
   overflow: visible;
+  overflow-wrap: anywhere;
 }
 
 .feed-detail {

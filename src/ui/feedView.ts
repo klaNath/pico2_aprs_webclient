@@ -1,11 +1,13 @@
-// The Feed tab: what the tracker received (rx) and sent (tx), oldest first like a log.
+// The Feed tab: what the tracker received (rx) and sent (tx), newest first.
 //
 // Rendering rules (the feed can hold 5000 items and render() runs every second):
-//  - rows are keyed by `FeedItem.seq`; render() appends new rows and removes the ones that were
-//    trimmed from the feed, and never rebuilds the others (an open row stays open),
+//  - rows are keyed by `FeedItem.seq`; render() puts new rows at the top and removes the ones
+//    that were trimmed from the feed (at the bottom), and never rebuilds the others (an open row
+//    stays open),
 //  - the list is rebuilt only when the filter changes,
 //  - at most MAX_ROWS rows are in the DOM ("Showing latest N"),
-//  - the page follows new items only while it is scrolled to the bottom and no row is open.
+//  - new rows simply appear at the top while the top of the list is visible and no row is open;
+//    otherwise the rows being read are kept in place and "N new ↑" is shown.
 
 import "./feed.css";
 import type { App, FeedItem } from "../store/state.ts";
@@ -33,8 +35,8 @@ import type { View } from "./view.ts";
 
 /** Most rows kept in the DOM. */
 export const MAX_ROWS = 300;
-/** How close to the bottom (px) still counts as "at the bottom". */
-const BOTTOM_SLACK_PX = 48;
+/** How far (px) the list top may be scrolled under the header and still count as "at the top". */
+const TOP_SLACK_PX = 48;
 
 interface Row {
   seq: number;
@@ -44,13 +46,18 @@ interface Row {
   detail?: HTMLElement;
 }
 
-function isAtBottom(): boolean {
-  const doc = document.documentElement;
-  return window.innerHeight + window.scrollY >= doc.scrollHeight - BOTTOM_SLACK_PX;
+/** The bottom edge of the sticky app header (0 without one). */
+function headerBottom(): number {
+  return document.querySelector(".app-header")?.getBoundingClientRect().bottom ?? 0;
 }
 
-function scrollToBottom(): void {
-  window.scrollTo(0, document.documentElement.scrollHeight);
+/** Whether the top of `list` (its newest row) is visible. */
+function isAtTop(list: HTMLElement): boolean {
+  return list.getBoundingClientRect().top >= headerBottom() - TOP_SLACK_PX;
+}
+
+function scrollToTop(): void {
+  window.scrollTo(0, 0);
 }
 
 /** Save `text` to a file on this device (nothing is sent anywhere). */
@@ -86,8 +93,8 @@ export function createFeedView(app: App): View {
   let appliedKey = "all|all|";
   let rows: Row[] = [];
   const open = new Set<number>();
-  /** Whether the user was at the bottom the last time we looked (kept while the tab is hidden). */
-  let stickBottom = true;
+  /** Whether the user was at the top the last time we looked (kept while the tab is hidden). */
+  let stickTop = true;
   let savedY = 0;
   let attached = false;
   let unseen = 0;
@@ -191,8 +198,8 @@ export function createFeedView(app: App): View {
     on: {
       click: () => {
         unseen = 0;
-        stickBottom = true;
-        scrollToBottom();
+        stickTop = true;
+        scrollToTop();
         updateNewBtn();
       },
     },
@@ -232,7 +239,7 @@ export function createFeedView(app: App): View {
 
   function updateNewBtn(): void {
     newBtn.hidden = unseen === 0;
-    setText(newBtn, `${unseen} new ↓`);
+    setText(newBtn, `${unseen} new ↑`);
   }
 
   function setOpen(row: Row, want: boolean): void {
@@ -306,9 +313,9 @@ export function createFeedView(app: App): View {
     "scroll",
     () => {
       if (!el.isConnected) return; // the browser clamps the scroll while another tab is shown
-      stickBottom = isAtBottom();
+      stickTop = isAtTop(list);
       savedY = window.scrollY;
-      if (stickBottom && unseen > 0) {
+      if (stickTop && unseen > 0) {
         unseen = 0;
         updateNewBtn();
       }
@@ -319,7 +326,7 @@ export function createFeedView(app: App): View {
   function render(): void {
     const reattached = !attached;
     attached = true;
-    const wasAtBottom = reattached ? stickBottom : isAtBottom();
+    const wasAtTop = reattached ? stickTop : isAtTop(list);
 
     // A new filter: start the list again (the only time rows are rebuilt).
     const key = `${filter.dir}|${filter.category}|${filter.source.trim().toUpperCase()}`;
@@ -333,23 +340,55 @@ export function createFeedView(app: App): View {
 
     const { shown, matched } = selectItems(app.feed, filter, MAX_ROWS);
 
-    // Remove rows that left the feed (trimmed, cleared) or the window of MAX_ROWS ...
+    // `rows` is oldest first like the feed; in the DOM the newest row is at the top.
+    // Remove rows that left the feed (trimmed, cleared) or the window of MAX_ROWS (the bottom) ...
     const firstSeq = shown[0]?.seq ?? Number.POSITIVE_INFINITY;
     let drop = 0;
     while (drop < rows.length && rows[drop]!.seq < firstSeq) dropRow(rows[drop++]!);
     if (drop > 0) rows = rows.slice(drop);
-    // ... and add the new ones at the end.
-    const lastSeq = rows.length > 0 ? rows[rows.length - 1]!.seq : -1;
-    const frag = document.createDocumentFragment();
-    let added = 0;
+    // ... and put the new ones at the top, newest first.
+    const topRow = rows.length > 0 ? rows[rows.length - 1]! : undefined;
+    const lastSeq = topRow?.seq ?? -1;
+    const fresh: Row[] = [];
     for (const item of shown) {
       if (item.seq <= lastSeq) continue;
-      const row = makeRow(item);
-      rows.push(row);
-      frag.append(row.el);
-      added++;
+      fresh.push(makeRow(item));
     }
-    if (added > 0) list.append(frag);
+    const added = fresh.length;
+    const follow = !filterChanged && wasAtTop && open.size === 0;
+    // Back from another tab: main.ts calls render() *before* it puts the view back into <main>,
+    // so the page cannot be scrolled yet. Scroll once the list is attached (a microtask later).
+    const returning = reattached && !filterChanged;
+    // Keep the rows being read in place (the list has `overflow-anchor: none`, so this is ours).
+    const keep =
+      !returning && !follow && !filterChanged && topRow
+        ? topRow.el.getBoundingClientRect().top
+        : null;
+    if (added > 0) {
+      const frag = document.createDocumentFragment();
+      for (let i = fresh.length - 1; i >= 0; i--) frag.append(fresh[i]!.el);
+      list.prepend(frag);
+      rows.push(...fresh);
+    }
+    if (keep !== null && topRow && added > 0) {
+      window.scrollBy(0, topRow.el.getBoundingClientRect().top - keep);
+    }
+    if (returning) {
+      const y = savedY;
+      queueMicrotask(() => {
+        if (follow) {
+          scrollToTop();
+          return;
+        }
+        window.scrollTo(0, y);
+        // Rows added while away pushed what was being read down by their height.
+        const newest = list.firstElementChild;
+        if (added > 0 && topRow && newest) {
+          const pushed = topRow.el.getBoundingClientRect().top - newest.getBoundingClientRect().top;
+          window.scrollBy(0, pushed);
+        }
+      });
+    }
 
     // Texts.
     const limit = app.prefs.get("logLimit");
@@ -387,18 +426,14 @@ export function createFeedView(app: App): View {
       filteredTxtBtn.disabled = tnc2Items(exportItems(true), { includeTx: withTx }).length === 0;
     }
 
-    // Scrolling: follow only from the bottom, and never while a row is open.
+    // Scrolling: new rows show up at the top only while it is visible and no row is open.
     if (filterChanged) {
       unseen = 0;
-    } else if (wasAtBottom && open.size === 0) {
-      if (added > 0 || reattached) scrollToBottom();
-      stickBottom = true;
+    } else if (follow) {
+      stickTop = true;
       unseen = 0;
-    } else if (reattached && !stickBottom) {
-      window.scrollTo(0, savedY);
-      unseen += added;
-    } else if (added > 0) {
-      unseen += added;
+    } else {
+      unseen += added; // the scroll position was kept (or is restored above)
     }
     if (rows.length === 0) unseen = 0;
     updateNewBtn();
