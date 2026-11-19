@@ -150,6 +150,14 @@
 - 未対応(仕様どおり、変更不要と判断): §8.6 の `busy`(1 回だけ 500 ms 後に再送する今の方針で足りる。1 つずつ待って送るので普通は来ない)、§9.1 の `callsign`(小文字と空白は入力時に弾いている)、§8.1 の `call`(省略可の型。未設定のときの Status の表示は未確認)
 - `PAIRING_HINT`: 「LCD に出てから 30 秒以内に入力」「消えたら、または 1 分ほどで切れたら接続し直して新しいパスキー」
 
+## Settings のシンボルの絵(2026-11-19)
+
+- Settings の Symbol で、選んだシンボルの絵を出す(`src/ui/symbolIcon.ts`、48 px)。画像は aprs.fi のシンボル集(https://github.com/hessu/aprs-symbols、commit `f2286a9`)の 64 px の 3 枚(主表、副表、オーバーレイ文字)を `public/aprs-symbols/` に置いた(PWA の precache に入る。約 330 KB)。出典と各シンボルの権利は同じフォルダの `README.md` と `COPYRIGHT.md`。画面にも出典のリンクを出す
+- 権利はシンボルごとに違う(パブリックドメイン、CC BY-SA、CC BY、不明、少数の企業ロゴ)。利用者の判断で採用した
+- 未割り当てのコードは絵を出さない(画像の側には「+」の仮の絵があるため)。オーバーレイ(0-9、A-Z)は副表の絵の上に文字を重ねる
+- Stations と Radar は、今までどおり文字と色(今回は対象外)
+- 確認: 切り出し位置は画像から同じ計算で切り出して確認した。Android 実機の Chrome で Demo の Settings を開いて確認した(ダークで主表の `/>`、ライトでオーバーレイの `A#`、未割り当ての `/D` は絵を出さず名前だけ)
+
 ## 仕様 v0.5 への対応(ピンを `f8cd818` → `ce51b61`、2026-11-19)
 
 - `beacon.send`(§7.5): `DeviceClient.sendBeacon(confirmation)`。確認の種類(`{onAir: true}` か `{dryRun: true}`)を型で必須にした。1 つずつ送るキューを通すので、応答待ちの間はほかの要求を送らない(§10)。応答は送信が終わってから来るので、タイムアウトは 15 秒(`beaconTimeoutMs`。仕様に上限の記載がなく、仮置き)。`err` の `too_soon` は `DeviceError.waitS`

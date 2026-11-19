@@ -51,7 +51,7 @@ pico2_aprs_webclient/
       parse.ts              データ種別ごとの解析(! = / @ ; ) : > T _ ` ')
       mice.ts               宛先と情報フィールドから緯度経度、速度、コース、メッセージを得る
       compressed.ts, weather.ts, telemetry.ts
-      symbols.ts            主要なシンボルの名前表(画像は持たず、文字と色で表す)
+      symbols.ts            主要なシンボルの名前表(一覧と Radar は文字と色で表す。Settings のシンボル選択だけ、aprs.fi のシンボル画像を表示する。2026-11-19 に変更)
       geo.ts                距離と方位(大圏)
     store/
       state.ts              接続状態、status、局の表(stations.list と rx で更新)、rx/tx のログ(リングバッファ、上限は設定で変えられる)

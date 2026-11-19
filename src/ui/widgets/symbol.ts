@@ -3,6 +3,7 @@
 
 import { symbolInfo, symbolName } from "../../aprs/symbols.ts";
 import { h, setText } from "../dom.ts";
+import { SYMBOL_SET_URL, createSymbolIcon } from "../symbolIcon.ts";
 import type { Control, OnValue } from "./types.ts";
 
 const OVERLAYS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -15,6 +16,16 @@ export function createSymbolControl(id: string, onValue: OnValue): Control {
   const table = h("select", { id, class: "sf-input", attrs: { "aria-label": "Symbol table" } });
   const code = h("select", { class: "sf-input", attrs: { "aria-label": "Symbol code" } });
   const name = h("div", { class: "sf-symname muted" });
+  const icon = createSymbolIcon(48);
+  const credit = h(
+    "div",
+    { class: "sf-symcredit muted" },
+    "Symbol images: ",
+    h("a", {
+      text: "aprs.fi symbol set",
+      attrs: { href: SYMBOL_SET_URL, target: "_blank", rel: "noopener noreferrer" },
+    }),
+  );
   const none = (): HTMLOptionElement =>
     h("option", { text: "—", attrs: { value: "" }, disabled: true });
   table.append(
@@ -44,6 +55,7 @@ export function createSymbolControl(id: string, onValue: OnValue): Control {
   };
   const current = (): string => table.value + code.value;
   const showName = (): void => {
+    icon.show(table.value === "" || code.value === "" ? undefined : current());
     if (table.value === "" || code.value === "") {
       setText(name, "Choose a table and a code.");
       return;
@@ -73,7 +85,14 @@ export function createSymbolControl(id: string, onValue: OnValue): Control {
   showName();
 
   return {
-    el: h("div", { class: "sf-symbol" }, table, code, name),
+    el: h(
+      "div",
+      { class: "sf-symbol" },
+      table,
+      code,
+      h("div", { class: "sf-symview" }, icon.el, name),
+      credit,
+    ),
     inputId: id,
     set(v): void {
       const s = typeof v === "string" && v.length === 2 ? v : "";
