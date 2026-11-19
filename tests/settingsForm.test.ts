@@ -10,6 +10,7 @@ import {
   ALL_RISKS,
   confirmationFor,
   describeError,
+  choiceOptions,
   deviceChangedKeys,
   emptyDraft,
   evaluateForm,
@@ -231,8 +232,13 @@ describe("confirmations", () => {
   it("every SettingsRisk has a dialog with a title, text and a danger confirm button", () => {
     // ALL_RISKS is a Record<SettingsRisk, true> underneath, so a new risk fails to compile
     // until it is added there; this checks that each one has real text.
-    const probe: SettingsValues = { callsign: "Q1NEW", ssid: 3, tx_enabled: true };
-    expect(ALL_RISKS).toEqual(["callsign", "ssid", "tx_enable"]); // the order the user is asked in
+    const probe: SettingsValues = {
+      callsign: "Q1NEW",
+      ssid: 3,
+      tx_enabled: true,
+      beacon_mode: "auto",
+    };
+    expect(ALL_RISKS).toEqual(["callsign", "ssid", "tx_enable", "beacon_auto"]); // the order the user is asked in
     for (const risk of ALL_RISKS) {
       const o = confirmationFor(risk, CURRENT, probe);
       expect(o.title.length).toBeGreaterThan(5);
@@ -695,5 +701,32 @@ describe("error texts", () => {
     );
     expect(savedMessage([], SCHEMA)).toMatch(/already had/);
     expect(savedMessage(undefined, SCHEMA)).toMatch(/already had/);
+  });
+});
+
+describe("beacon_mode (v0.5)", () => {
+  const bm = item("beacon_mode");
+  it("gets the choice widget, and a str without choices stays a text input", () => {
+    expect(widgetKindFor(bm)).toBe("choice");
+    expect(widgetKindFor({ key: "x", type: "str" })).toBe("text");
+    expect(widgetKindFor({ key: "x", type: "str", choices: [1] })).toBe("text");
+  });
+  it("lists its choices with words", () => {
+    expect(choiceOptions(bm).map((o) => o.value)).toEqual(["auto", "manual"]);
+    expect(choiceOptions(bm)[1]!.label).toMatch(/Manual/);
+  });
+  it("is in the Beacon group with a label", () => {
+    expect(fieldLabel(bm)).toBe("Beacon mode");
+    expect(groupItems([bm])[0]!.title).toBe("Beacon");
+  });
+  it("the beacon_auto dialog says a beacon may go out at once", () => {
+    const o = confirmationFor(
+      "beacon_auto",
+      { ...DEFAULT_SETTINGS, beacon_mode: "manual", tx_enabled: true },
+      { beacon_mode: "auto" },
+    );
+    expect(o.body.join(" ")).toMatch(/right away/);
+    expect(o.facts).toContain("Beacon mode: manual → auto");
+    expect(o.danger).toBe(true);
   });
 });

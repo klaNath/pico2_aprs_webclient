@@ -4,10 +4,10 @@
 
 ## いまの状態(要約)
 
-- **作業 1〜6 は実装済みで、公開サイトに配信されている**: https://klanath.github.io/pico2_aprs_webclient/ (`main` への push で GitHub Actions が自動配信。typecheck、lint、test が通らなければ配信しない)。最後のコミットは `c2024fb`、`origin/main` と一致。テスト 928 件、型チェック、lint、ビルドは通っている
+- **作業 1〜6 は実装済みで、公開サイトに配信されている**: https://klanath.github.io/pico2_aprs_webclient/ (`main` への push で GitHub Actions が自動配信。typecheck、lint、test が通らなければ配信しない)。テスト 965 件、型チェック、lint、ビルドは通っている
 - **Android 実機(Android 11、Chrome 157)で確認済み**: チューザー、ペアリング(通知から開くパスキー入力)、接続して Status/Settings/Feed/Stations/Radar の表示、ペアリング済みの再接続(パスキーなし)、自動再接続(端末の Bluetooth を切って入れる、ファームウェア更新によるトラッカーの再起動)、PWA(インストール可能、通信なしで起動)
 - **実機で未確認**(あなたの操作が要る。下の「次にやること」): 間違ったパスキー、ダイアログの取り消し、片側だけペアリングを消した場合、トラッカーが戻らないときの「20 回で諦める」、Settings の書き込み(実機の送信設定が変わるので、Q1 のテスト用コールサインに替えられるときに)、ホーム画面追加後の表示、新しい版が出たときの「Update」
-- **仕様**: ble-protocol.md v0.4(proto 1)に対応済み。ピン `f8cd818`。Issue #5(U3)はファームウェア側の返信まで済みで、Chrome 側の残りのテスト待ちのため開いたまま
+- **仕様**: ble-protocol.md v0.5(proto 1)に対応済み(下の「仕様 v0.5 への対応」)。ピン `ce51b61`。Issue #5(U3)はファームウェア側の返信まで済みで、Chrome 側の残りのテスト待ちのため開いたまま
 - **再開するとき**: `docs/HANDOFF.md` を読む → `npm ci` → `npm run spec` → `npm run spec:update`(ピンが動いたら差分を確認して反映してからコミット)。確認の方法は下の「Android の Chrome で確かめる」と「画面を確認する方法」
 - **実機の識別情報(コールサイン、アドレス、広告名)は、ファイル、Issue、コミットに書かない**(リポジトリは公開)
 
@@ -149,6 +149,14 @@
 - §5.3(立て直し): 書き込みが失敗したら、次の要求の前に `\n` を 1 つだけ送る。装置が断片を持っていれば `bad_json`(id なし)が 1 つ返るので、それは要求の失敗にしない(`expectBadJson`。次の応答で解除)。新しい接続では不要
 - 未対応(仕様どおり、変更不要と判断): §8.6 の `busy`(1 回だけ 500 ms 後に再送する今の方針で足りる。1 つずつ待って送るので普通は来ない)、§9.1 の `callsign`(小文字と空白は入力時に弾いている)、§8.1 の `call`(省略可の型。未設定のときの Status の表示は未確認)
 - `PAIRING_HINT`: 「LCD に出てから 30 秒以内に入力」「消えたら、または 1 分ほどで切れたら接続し直して新しいパスキー」
+
+## 仕様 v0.5 への対応(ピンを `f8cd818` → `ce51b61`、2026-11-19)
+
+- `beacon.send`(§7.5): `DeviceClient.sendBeacon(confirmation)`。確認の種類(`{onAir: true}` か `{dryRun: true}`)を型で必須にした。1 つずつ送るキューを通すので、応答待ちの間はほかの要求を送らない(§10)。応答は送信が終わってから来るので、タイムアウトは 15 秒(`beaconTimeoutMs`。仕様に上限の記載がなく、仮置き)。`err` の `too_soon` は `DeviceError.waitS`
+- Status タブ: 「Send beacon now」ボタン(`src/ui/beaconSend.ts`)。押せる条件はスイッチがオン、測位 2 以上と時刻、前回から 10 秒以上(最後の判断は装置)。`tx_ready` が true(または不明)のときだけ確認ダイアログを出し、dry run はダイアログなし。ダイアログの後と送る直前に `tx_ready` を見直し、状態が変わっていたら送らない(`runBeaconSend`)。「Beacon mode」の行を足し、manual のとき「Next beacon」は「manual (only when sent)」
+- 設定 `beacon_mode`: schema の `choices` を選択式の widget にした(`widgets/choice.ts`)。`choices` の確認は値の包含だけなので、装置から来る項目にも使う(形の崩れた `choices` は無視)。`auto` に変えるときは確認(`SettingsRisk` の `beacon_auto`)。`status.beacon_mode` がキャッシュと食い違えば設定を読み直す
+- Mock: `beacon.send`(スイッチ → 測位と時刻 → 10 秒の順に調べる)、`status` に `beacon_mode`、`utc`、`last_tx_s`。テスト用に `failNextBeacon`、`now`
+- **未確認**: 実機での `beacon.send`(Q1 のテスト用コールサイン、または tx 無効の dry run で)。画面(ボタンの見た目、ダイアログ)をブラウザで開いての確認。仕様への質問は Issue で登録済み(`klaNath/pico2_aprs` の #7: 応答が来るまでの上限、#8: `beacon` の `dry` が必ず入るか。ない場合は「送った」と言わない作りにした)
 
 ## 環境の注意
 

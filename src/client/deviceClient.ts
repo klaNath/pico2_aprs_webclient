@@ -14,6 +14,7 @@ import { normalizeSettings, settingEquals, settingsRisks } from "../protocol/set
 import type { SettingsRisk } from "../protocol/settings.ts";
 import { PROTO_VERSION, isParseError, parseMessage } from "../protocol/types.ts";
 import type {
+  BeaconMsg,
   ErrMsg,
   HelloMsg,
   Incoming,
@@ -63,6 +64,11 @@ export interface DeviceClientOptions {
    */
   helloWindowMs?: number;
   busyRetryDelayMs?: number;
+  /**
+   * How long to wait for the answer to `beacon.send`. The device answers after the transmission
+   * ends (about 1-2 s, §7.5), and the spec gives no upper limit.
+   */
+  beaconTimeoutMs?: number;
   /** Bytes per write, 1 to MAX_WRITE_BYTES (§5.2). Larger values are clamped to 20. */
   maxWriteBytes?: number;
 }
@@ -85,13 +91,16 @@ export class DeviceError extends Error {
   code: string;
   key?: string;
   msg?: string;
+  /** `too_soon`: seconds left before `beacon.send` is accepted again. */
+  waitS?: number;
 
-  constructor(code: string, msg?: string, key?: string) {
+  constructor(code: string, msg?: string, key?: string, waitS?: number) {
     super(`${code}${key ? ` (${key})` : ""}${msg ? `: ${msg}` : ""}`);
     this.name = "DeviceError";
     this.code = code;
     this.msg = msg;
     this.key = key;
+    this.waitS = waitS;
   }
 }
 
@@ -99,6 +108,12 @@ export class DeviceError extends Error {
 export interface SetSettingsOptions {
   confirmed?: readonly SettingsRisk[];
 }
+
+/**
+ * Proof that the user confirmed `beacon.send`, and for which case: `onAir` when `tx_ready` was true
+ * (the beacon goes on the air), `dryRun` when it was false (recorded only). Required by `sendBeacon`.
+ */
+export type BeaconConfirmation = { onAir: true } | { dryRun: true };
 
 /** Proof that the user confirmed a reset. Required by `resetSettings`. */
 export interface ResetConfirmation {
@@ -112,6 +127,8 @@ interface Pending {
   reject: (e: Error) => void;
   sends: number;
   busyRetried: boolean;
+  /** Timeout for the answer, when it differs from the default. */
+  timeoutMs?: number;
   /** Resend every `everyMs` until `Date.now()` reaches `until`. */
   retry?: { everyMs: number; until: number };
   /** Set for stations.list: collects `station` lines until `stations.end`. */
@@ -181,6 +198,7 @@ export class DeviceClient extends Emitter<ClientEvents> {
       helloRetryMs: options.helloRetryMs ?? 3000,
       helloWindowMs: options.helloWindowMs ?? HELLO_WINDOW_MS,
       busyRetryDelayMs: options.busyRetryDelayMs ?? 500,
+      beaconTimeoutMs: options.beaconTimeoutMs ?? 15_000,
       // The device accepts at most 20 bytes per write (§5.2): never more, whatever is asked.
       maxWriteBytes: Number.isFinite(maxWrite)
         ? Math.min(MAX_WRITE_BYTES, Math.max(1, maxWrite))
@@ -339,6 +357,7 @@ export class DeviceClient extends Emitter<ClientEvents> {
       if ("callsign" in norm.values) r.push("callsign");
       if ("ssid" in norm.values) r.push("ssid");
       if (norm.values.tx_enabled === true) r.push("tx_enable");
+      if (norm.values.beacon_mode === "auto") r.push("beacon_auto");
       return r;
     }
     return settingsRisks(this.settings, norm.values);
@@ -377,7 +396,11 @@ export class DeviceClient extends Emitter<ClientEvents> {
         throw new DeviceError(
           "confirmation_required",
           `needs confirmation: ${missing.join(", ")}`,
-          missing[0] === "callsign" ? "callsign" : "tx_enabled",
+          missing[0] === "callsign"
+            ? "callsign"
+            : missing[0] === "beacon_auto"
+              ? "beacon_mode"
+              : "tx_enabled",
         );
       }
       if (Object.keys(diff).length === 0) return this.emptyResult();
@@ -404,6 +427,25 @@ export class DeviceClient extends Emitter<ClientEvents> {
     )) as StationMsg[];
     this.emit("stations", this.stations);
     return this.stations;
+  }
+
+  /**
+   * Send one position beacon now (`beacon.send`, §7.5). It can put a signal on the air at once, so
+   * the caller must pass what the user confirmed (type-enforced). It goes through the request
+   * queue: nothing else is sent while it waits for its answer, which comes after the transmission.
+   * Never call this automatically or repeatedly. A `timeout` means it is not known whether the
+   * beacon was sent.
+   */
+  async sendBeacon(confirmation: BeaconConfirmation): Promise<BeaconMsg> {
+    const c = confirmation as Partial<{ onAir: boolean; dryRun: boolean }> | undefined;
+    if (c?.onAir !== true && c?.dryRun !== true) {
+      throw new DeviceError("confirmation_required", "beacon.send needs confirmation");
+    }
+    this.requireReady();
+    return (await this.request(
+      { op: "beacon.send" },
+      { timeoutMs: this.opts.beaconTimeoutMs },
+    )) as BeaconMsg;
   }
 
   // ---- settings helpers -------------------------------------------------------------------
@@ -461,7 +503,7 @@ export class DeviceClient extends Emitter<ClientEvents> {
     return msg;
   }
 
-  /** `status` repeats `tx_enabled` and `call`: if they disagree with the cache, read it again. */
+  /** `status` repeats `tx_enabled`, `call` and `beacon_mode`: if they disagree with the cache, read it again. */
   private checkStatusAgainstSettings(s: StatusMsg): void {
     if (!this.settingsValid) return;
     const cs = this.settings.callsign;
@@ -470,6 +512,10 @@ export class DeviceClient extends Emitter<ClientEvents> {
       const ssid = this.settings.ssid;
       const expected = typeof ssid === "number" && ssid > 0 ? `${cs}-${ssid}` : cs;
       if (s.call !== expected) differs = true;
+    }
+    const bm = this.settings.beacon_mode;
+    if (typeof s.beacon_mode === "string" && typeof bm === "string" && s.beacon_mode !== bm) {
+      differs = true;
     }
     if (differs) {
       this.settingsValid = false;
@@ -481,7 +527,7 @@ export class DeviceClient extends Emitter<ClientEvents> {
 
   private request(
     req: Request,
-    opts: { retry?: Pending["retry"]; collect?: boolean } = {},
+    opts: { retry?: Pending["retry"]; collect?: boolean; timeoutMs?: number } = {},
   ): Promise<unknown> {
     if (this.state !== "handshaking" && this.state !== "ready") {
       return Promise.reject(new DeviceError("not_connected"));
@@ -498,7 +544,7 @@ export class DeviceClient extends Emitter<ClientEvents> {
 
   private exec(
     req: Request,
-    opts: { retry?: Pending["retry"]; collect?: boolean },
+    opts: { retry?: Pending["retry"]; collect?: boolean; timeoutMs?: number },
   ): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const id = this.nextId++;
@@ -522,6 +568,7 @@ export class DeviceClient extends Emitter<ClientEvents> {
         sends: 0,
         busyRetried: false,
         retry: opts.retry,
+        timeoutMs: opts.timeoutMs,
         stations: opts.collect ? [] : undefined,
       };
       this.pending = p;
@@ -628,7 +675,7 @@ export class DeviceClient extends Emitter<ClientEvents> {
     } else {
       p.timer = setTimeout(
         () => this.settle(p, () => p.reject(new DeviceError("timeout", "no response"))),
-        this.opts.requestTimeoutMs,
+        p.timeoutMs ?? this.opts.requestTimeoutMs,
       );
     }
   }
@@ -712,12 +759,12 @@ export class DeviceClient extends Emitter<ClientEvents> {
       if (e.id === undefined && e.code === "bad_json" && this.expectBadJson) {
         this.expectBadJson = false; // the answer to the resync "\n" (§5.3)
       } else if (p && e.id === p.id) {
-        this.settle(p, () => p.reject(new DeviceError(e.code, e.msg, e.key)));
+        this.settle(p, () => p.reject(new DeviceError(e.code, e.msg, e.key, e.wait_s)));
       } else if (p && e.id === undefined && e.code === "busy") {
         this.onBusy(p);
       } else if (p && e.id === undefined && (e.code === "too_long" || e.code === "bad_json")) {
         // These come without an id. With one request in flight, it is the one that failed.
-        this.settle(p, () => p.reject(new DeviceError(e.code, e.msg, e.key)));
+        this.settle(p, () => p.reject(new DeviceError(e.code, e.msg, e.key, e.wait_s)));
       } else {
         this.emit("deviceError", e);
       }

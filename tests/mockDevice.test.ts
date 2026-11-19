@@ -173,3 +173,53 @@ describe("hello / status / stations.list", () => {
     expect(out[0]).toMatchObject({ src: "Q1AAA-9" });
   });
 });
+
+describe("beacon.send (§7.5, v0.5)", () => {
+  let t = 1_700_000_000_000;
+  beforeEach(() => {
+    dev.now = () => t;
+  });
+
+  it("answers beacon and then sends the tx event", () => {
+    dev.settings.tx_enabled = true;
+    const out = call({ op: "beacon.send", id: 7 });
+    expect(out[0]).toEqual({ t: "beacon", id: 7, dry: false });
+    expect(out[1]).toMatchObject({ t: "tx", dry: false });
+    expect(String(out[1]!.tnc2)).toMatch(/^Q1TEST-7>/);
+    expect(dev.txCount).toBe(1);
+  });
+  it("is a dry run when the transmit gate refuses", () => {
+    expect(call({ op: "beacon.send", id: 1 })[0]).toEqual({ t: "beacon", id: 1, dry: true });
+  });
+  it("checks the switch, then the fix, then the 10 s rule, in that order", () => {
+    dev.sw = false;
+    dev.fix = 0;
+    expect(call({ op: "beacon.send", id: 1 })).toEqual([{ t: "err", id: 1, code: "switch_off" }]);
+    dev.sw = true;
+    expect(call({ op: "beacon.send", id: 2 })).toEqual([{ t: "err", id: 2, code: "no_fix" }]);
+    dev.fix = 3;
+    expect(call({ op: "beacon.send", id: 3 })[0]).toMatchObject({ t: "beacon" });
+    t += 4000;
+    expect(call({ op: "beacon.send", id: 4 })).toEqual([
+      { t: "err", id: 4, code: "too_soon", wait_s: 6 },
+    ]);
+    t += 6000;
+    expect(call({ op: "beacon.send", id: 5 })[0]).toMatchObject({ t: "beacon" });
+  });
+  it("sends nothing when it fails", () => {
+    dev.failNextBeacon = "frame_too_long";
+    expect(call({ op: "beacon.send", id: 1 })).toEqual([
+      { t: "err", id: 1, code: "frame_too_long" },
+    ]);
+    expect(dev.txCount).toBe(0);
+  });
+  it("status shows beacon_mode, utc and last_tx_s", () => {
+    expect(dev.status()).toMatchObject({ beacon_mode: "auto" });
+    expect(dev.status().last_tx_s).toBeUndefined();
+    call({ op: "beacon.send" });
+    t += 3000;
+    expect(dev.status().last_tx_s).toBe(3);
+    dev.fix = 0;
+    expect(dev.status().utc).toBeUndefined();
+  });
+});

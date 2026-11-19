@@ -20,7 +20,7 @@ pico2_aprs(Pico 2 W の APRS トラッカー)を Android Chrome から BLE(Web B
 - clone 直後: 普通に `git clone <url>` したあと `npm run spec` を一度実行する。`--recurse-submodules` は使わない(`pico2_aprs` 自身のサブモジュール `third_party/*` まで取ってしまう。sparse-checkout の設定も clone ごとに必要なので、結局 `npm run spec` が要る)
 - 最新に進める: `npm run spec:update`(ピンを追跡ブランチの先頭に動かす)→ 変更を確認 → `git add docs/spec-src && git commit`
 - 実体は `scripts/setup-spec.sh`
-- **送信の安全**: `tx_ready` は常に見える場所に表示する。`tx_enabled` を true にする、callsign を変える、reset するときは確認ダイアログを出す。`mice_message` は 0〜6 だけ選べる
+- **送信の安全**: `tx_ready` は常に見える場所に表示する。`tx_enabled` を true にする、callsign を変える、reset するときは確認ダイアログを出す。`mice_message` は 0〜6 だけ選べる。`beacon.send`(今すぐビーコン)は利用者が押したときだけ送る(自動・連続で送らない)。電波が出る場合(`tx_ready` が true)は確認ダイアログを出す。`beacon_mode` を `auto` に変えるときも確認する
 - テストデータのコールサインは Q1 で始まる架空のもの(`Q1TEST` など)を使う
 - Web 上(サーバー、DB、オブジェクトストレージ)には永続データを置かない。端末内(localStorage、Cookie)への保存は可
 - TypeScript は 6.0 系に固定(`typescript-eslint` が 7.x に未対応)。`--force` や `--legacy-peer-deps` で回避しない

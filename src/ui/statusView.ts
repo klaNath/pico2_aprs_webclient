@@ -3,6 +3,8 @@
 
 import { formatLatLon, NO_VALUE } from "../aprs/geo.ts";
 import type { App } from "../store/state.ts";
+import { beaconButtonState, runBeaconSend } from "./beaconSend.ts";
+import { confirmDialog } from "./dialog.ts";
 import { h, setChildren, setText } from "./dom.ts";
 import { fmtAge } from "./format.ts";
 import { txBadge } from "./header.ts";
@@ -52,6 +54,43 @@ export function createStatusView(app: App): View {
     class: "muted hint",
     text: "Beacon counts include dry runs (beacons built while the tracker could not transmit).",
   });
+  // "Send beacon now": only on a deliberate press, never automatic (CLAUDE.md, transmit safety).
+  let sending = false;
+  let result = "";
+  const sendBtn = h("button", {
+    class: "btn btn-danger",
+    text: "Send beacon now",
+    attrs: { type: "button" },
+  });
+  const sendNote = h("p", { class: "muted hint", attrs: { role: "status" } });
+  const buttonNow = (): ReturnType<typeof beaconButtonState> =>
+    beaconButtonState(
+      app.state,
+      app.statusStale,
+      app.status,
+      app.client?.lastStatusAt,
+      Date.now(),
+      sending,
+    );
+  sendBtn.addEventListener("click", () => {
+    const client = app.client;
+    if (sending || !client || !buttonNow().enabled) return;
+    sending = true;
+    result = "";
+    app.notify();
+    void runBeaconSend({
+      sendBeacon: (c) => client.sendBeacon(c),
+      confirm: (o) => confirmDialog(o),
+      current: () => ({
+        usable: app.client === client && app.state === "ready" && !app.statusStale,
+        status: app.status,
+      }),
+    }).then((text) => {
+      sending = false;
+      result = text ?? "";
+      app.notify();
+    });
+  });
   const disconnect = h("button", {
     class: "btn",
     text: "Disconnect",
@@ -71,6 +110,7 @@ export function createStatusView(app: App): View {
       beaconHint,
       h("div", { class: "meter-row" }, h("span", { text: "Level" }), meter),
     ),
+    h("div", { class: "card" }, h("div", { class: "row" }, sendBtn), sendNote),
     h("div", { class: "row" }, disconnect),
   );
 
@@ -112,7 +152,24 @@ export function createStatusView(app: App): View {
             : `${fixLabel(s?.fix)}${s?.sats !== undefined ? ` · ${s.sats} sats` : ""}`,
         ),
         ...row("Position", pos),
-        ...row("Next beacon", next === undefined ? NO_VALUE : fmtAge(next)),
+        ...row(
+          "Beacon mode",
+          stale
+            ? NO_VALUE
+            : s?.beacon_mode === "auto"
+              ? "Auto"
+              : s?.beacon_mode === "manual"
+                ? "Manual"
+                : (s?.beacon_mode ?? NO_VALUE),
+        ),
+        ...row(
+          "Next beacon",
+          !stale && s?.beacon_mode === "manual"
+            ? "manual (only when sent)"
+            : next === undefined
+              ? NO_VALUE
+              : fmtAge(next),
+        ),
         // §8.1: last_tx_s and tx_count count dry runs too, so they say "beacon", not "transmit".
         ...row(
           "Last beacon",
@@ -129,6 +186,9 @@ export function createStatusView(app: App): View {
         ...row("SD card", v(s?.sd)),
         ...row("Dropped rx", v(s?.dropped)),
       );
+      const btn = buttonNow();
+      sendBtn.disabled = !btn.enabled;
+      setText(sendNote, result || btn.reason);
       meterFill.style.width = `${Math.round(levelFraction(stale ? undefined : s?.lvl_db) * 100)}%`;
       const dropped = !stale && (s?.dropped ?? 0) > 0;
       warn.hidden = !dropped;

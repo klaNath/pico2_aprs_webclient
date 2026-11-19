@@ -58,7 +58,7 @@ pico2_aprs_webclient/
       prefs.ts              localStorage のラッパー(try/catch。テーマ、ログの上限、レーダーの縮尺)
     ui/
       connectView.ts        接続、ペアリングの案内(LCD に出るパスキー)、再接続、エラー表示
-      statusView.ts         tx_ready を大きく表示、fix/sats/位置、sw、next_beacon_s、lvl_db メーター、sd、dropped
+      statusView.ts         tx_ready を大きく表示、fix/sats/位置、sw、beacon_mode、next_beacon_s、「Send beacon now」(beacon.send)、lvl_db メーター、sd、dropped
       feedView.ts           rx/tx を時系列で表示。解析結果を開くと詳細が見える
       stationsView.ts       局の一覧(距離、方位、last_s、count、lvl)
       radarView.ts          SVG のレーダー(自局が中心、対数または線形の縮尺、局をタップすると詳細)

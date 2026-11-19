@@ -25,7 +25,7 @@ export interface MockTransportOptions {
   writeDelayMs?: number;
 }
 
-/** §8.1: a change of fix, sw, tx_ready, tx_enabled or call is sent as a status about this long later. */
+/** §8.1: a change of fix, sw, tx_ready, tx_enabled, call or beacon_mode is sent as a status about this long later. */
 const STATUS_CHANGE_DELAY_MS = 20;
 
 /** The real limit (§5.2). Written out here on purpose, not imported, so that a change of the app's constant is caught. */
@@ -181,8 +181,8 @@ export class MockTransport implements Transport {
   }
 
   private currentStatusKey(): string {
-    const { fix, sw, tx_enabled, tx_ready, call } = this.device.status();
-    return JSON.stringify([fix, sw, tx_enabled, tx_ready, call]);
+    const { fix, sw, tx_enabled, tx_ready, call, beacon_mode } = this.device.status();
+    return JSON.stringify([fix, sw, tx_enabled, tx_ready, call, beacon_mode]);
   }
 
   onData(cb: (chunk: Uint8Array) => void): () => void {

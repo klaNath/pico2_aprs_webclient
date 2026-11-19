@@ -11,6 +11,7 @@ export const OPS = [
   "settings.set",
   "settings.reset",
   "stations.list",
+  "beacon.send",
 ] as const;
 export type Op = (typeof OPS)[number];
 
@@ -40,6 +41,8 @@ export interface StatusMsg {
   lat?: number;
   lon?: number;
   sw?: boolean;
+  /** The `beacon_mode` setting: "auto" or "manual" (§8.1). */
+  beacon_mode?: string;
   tx_enabled?: boolean;
   tx_ready?: boolean;
   tx_refuse?: string;
@@ -76,6 +79,14 @@ export interface TxMsg {
   utc?: string;
 }
 
+/** The answer to `beacon.send` (§7.5). The packet itself follows as a `tx` event. */
+export interface BeaconMsg {
+  t: "beacon";
+  id?: number;
+  /** True when the transmit gate refused: recorded, not sent on the air. */
+  dry?: boolean;
+}
+
 export interface StationMsg {
   t: "station";
   id?: number;
@@ -110,6 +121,8 @@ export interface SchemaItem {
   max_len?: number;
   max_items?: number;
   pattern?: string;
+  /** For "str": the only accepted values (§9.2). Checked where it is used. */
+  choices?: unknown;
 }
 
 export interface SchemaMsg {
@@ -133,6 +146,10 @@ export const KNOWN_ERR_CODES = [
   "invalid",
   "io",
   "internal",
+  "switch_off",
+  "no_fix",
+  "too_soon",
+  "frame_too_long",
 ] as const;
 export type ErrCode = (typeof KNOWN_ERR_CODES)[number] | (string & {});
 
@@ -142,6 +159,8 @@ export interface ErrMsg {
   code: ErrCode;
   key?: string;
   msg?: string;
+  /** `too_soon`: seconds left before `beacon.send` is accepted again. */
+  wait_s?: number;
 }
 
 export interface UnknownMsg {
@@ -155,6 +174,7 @@ export type Incoming =
   | StatusMsg
   | RxMsg
   | TxMsg
+  | BeaconMsg
   | StationMsg
   | StationsEndMsg
   | SchemaMsg
@@ -217,7 +237,7 @@ const SHAPES: Record<string, Shape> = {
       "dropped",
     ],
     bool: ["sw", "tx_enabled", "tx_ready"],
-    str: ["utc", "tx_refuse", "call", "sd"],
+    str: ["utc", "tx_refuse", "call", "sd", "beacon_mode"],
   },
   rx: {
     required: ["tnc2"],
@@ -226,6 +246,7 @@ const SHAPES: Record<string, Shape> = {
     bool: ["clip"],
   },
   tx: { required: ["tnc2"], str: ["tnc2", "utc"], bool: ["dry"] },
+  beacon: { bool: ["dry"] },
   station: {
     required: ["src"],
     str: ["src"],
@@ -233,7 +254,7 @@ const SHAPES: Record<string, Shape> = {
     bool: ["own"],
   },
   "stations.end": { num: ["n"] },
-  err: { required: ["code"], str: ["code", "key", "msg"] },
+  err: { required: ["code"], str: ["code", "key", "msg"], num: ["wait_s"] },
 };
 
 function checkShape(o: Record<string, unknown>): string | undefined {

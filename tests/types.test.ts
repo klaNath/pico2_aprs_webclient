@@ -94,3 +94,24 @@ describe("rxKind", () => {
     expect(rxKind({ kind: 5 })).toBe("other");
   });
 });
+
+describe("parseMessage: beacon.send (§7.5, v0.5)", () => {
+  it("accepts a beacon answer and checks that dry is a boolean", () => {
+    expect(parseMessage('{"t":"beacon","id":7,"dry":false}')).toMatchObject({
+      t: "beacon",
+      dry: false,
+    });
+    expect(parseMessage('{"t":"beacon","id":7,"dry":"no"}')).toMatchObject({
+      error: expect.any(String),
+      id: 7,
+    });
+  });
+  it("accepts status.beacon_mode as a string and err.wait_s as a number", () => {
+    expect(parseMessage('{"t":"status","beacon_mode":"manual"}')).toMatchObject({
+      beacon_mode: "manual",
+    });
+    expect(parseMessage('{"t":"status","beacon_mode":1}')).toHaveProperty("error");
+    expect(parseMessage('{"t":"err","code":"too_soon","wait_s":4}')).toMatchObject({ wait_s: 4 });
+    expect(parseMessage('{"t":"err","code":"too_soon","wait_s":"4"}')).toHaveProperty("error");
+  });
+});

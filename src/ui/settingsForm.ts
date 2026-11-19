@@ -7,7 +7,12 @@
 // from it, and sends the same snapshot with the confirmations the user gave.
 
 import type { DeviceClient } from "../client/deviceClient.ts";
-import { MICE_MESSAGES, settingEquals, validateSetting } from "../protocol/settings.ts";
+import {
+  MICE_MESSAGES,
+  itemChoices,
+  settingEquals,
+  validateSetting,
+} from "../protocol/settings.ts";
 import type { SettingsRisk } from "../protocol/settings.ts";
 import type { SchemaItem, SettingValue, SettingsMsg, SettingsValues } from "../protocol/types.ts";
 import type { ConfirmOptions } from "./dialog.ts";
@@ -50,6 +55,8 @@ export type WidgetKind =
   | "symbol"
   | "path"
   | "mice"
+  /** A `str` item with `choices` (§9.2): a selection. */
+  | "choice"
   | "text"
   | "number"
   | "toggle"
@@ -79,7 +86,7 @@ export function widgetKindFor(item: SchemaItem): WidgetKind {
   }
   switch (item.type) {
     case "str":
-      return "text";
+      return itemChoices(item) ? "choice" : "text";
     case "int":
     case "float":
       return "number";
@@ -102,6 +109,7 @@ const LABELS: Readonly<Record<string, string>> = {
   beacon_moving_s: "Beacon interval, moving",
   beacon_still_s: "Beacon interval, still",
   beacon_move_m: "Movement threshold",
+  beacon_mode: "Beacon mode",
   tx_enabled: "Transmit enabled",
   fx25_tx: "Transmit with FX.25",
 };
@@ -142,6 +150,7 @@ const GROUP_BY_KEY: Readonly<Record<string, GroupTitle>> = {
   beacon_moving_s: "Beacon",
   beacon_still_s: "Beacon",
   beacon_move_m: "Beacon",
+  beacon_mode: "Beacon",
   tx_enabled: "Transmit",
   fx25_tx: "Transmit",
 };
@@ -162,6 +171,19 @@ export function groupItems(
 /** The only choices for `mice_message`: 0 to 6 with their names (7, Emergency, is not offered). */
 export function miceOptions(): { value: number; label: string }[] {
   return MICE_MESSAGES.map((name, i) => ({ value: i, label: `${i} ${name}` }));
+}
+
+const CHOICE_LABELS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  beacon_mode: { auto: "Auto", manual: "Manual (only when sent from the app)" },
+};
+
+/** The choices of a `choice` item with the words to show (an unknown value is shown as it is). */
+export function choiceOptions(item: SchemaItem): { value: string; label: string }[] {
+  const names = getOwn(CHOICE_LABELS, item.key);
+  return (itemChoices(item) ?? []).map((value) => ({
+    value,
+    label: (names ? getOwn(names, value) : undefined) ?? value,
+  }));
 }
 
 /** "Off Duty" for 0; for anything the app cannot set (7, odd values) a plain description. */
@@ -285,7 +307,12 @@ export function deviceChangedKeys(
 // ---- confirmations ---------------------------------------------------------------------------
 
 /** Every kind of confirmation. A new `SettingsRisk` makes this fail to compile until it is added. */
-const RISK_TABLE: Record<SettingsRisk, true> = { callsign: true, ssid: true, tx_enable: true };
+const RISK_TABLE: Record<SettingsRisk, true> = {
+  callsign: true,
+  ssid: true,
+  tx_enable: true,
+  beacon_auto: true,
+};
 export const ALL_RISKS = Object.keys(RISK_TABLE) as SettingsRisk[];
 
 function show(v: unknown): string {
@@ -369,6 +396,30 @@ export function confirmationFor(
         danger: true,
       };
     }
+    case "beacon_auto": {
+      const call = fullCall(
+        "callsign" in changes ? changes.callsign : current.callsign,
+        "ssid" in changes ? changes.ssid : current.ssid,
+      );
+      const txOn = ("tx_enabled" in changes ? changes.tx_enabled : current.tx_enabled) === true;
+      return {
+        title: "Switch to automatic beacons?",
+        body: [
+          "The tracker will send beacons by itself by its interval rule, and it may send one right away.",
+          call && txOn
+            ? `Beacons go on the air as ${call} while the beacon switch is on.`
+            : "Transmit is not fully enabled (a callsign and Transmit enabled are needed), so beacons are only dry runs for now.",
+          "The physical beacon switch on the unit still decides whether it transmits.",
+        ],
+        facts: [
+          `Callsign: ${call ?? "not set"}`,
+          `Transmit enabled: ${txOn ? "on" : "off"}`,
+          `Beacon mode: ${show(current.beacon_mode)} → ${show(changes.beacon_mode)}`,
+        ],
+        confirmLabel: "Use automatic beacons",
+        danger: true,
+      };
+    }
     default: {
       // A kind of confirmation that this app version does not know: never skip it.
       const unknown: string = risk;
@@ -393,7 +444,7 @@ export function resetConfirmation(
   return {
     title: "Reset all settings?",
     body: [
-      "This deletes every saved setting on the device (callsign, SSID, symbol, path, comment, Mic-E message, beacon intervals, transmit permission, FX.25) and goes back to the defaults written in the device firmware.",
+      "This deletes every saved setting on the device (callsign, SSID, symbol, path, comment, Mic-E message, beacon intervals, beacon mode, transmit permission, FX.25) and goes back to the defaults written in the device firmware.",
       "The defaults may differ from what you use now, including the callsign and whether transmit is enabled. The physical beacon switch still decides whether the unit transmits.",
       ...(dirty ? ["Your unsaved edits in this form will be discarded."] : []),
     ],
@@ -446,6 +497,11 @@ function guardedKeys(changed: string[], risks: readonly SettingsRisk[]): string[
     keys.add("ssid");
   }
   if (risks.includes("ssid")) keys.add("callsign");
+  if (risks.includes("beacon_auto")) {
+    keys.add("callsign");
+    keys.add("ssid");
+    keys.add("tx_enabled");
+  }
   return [...keys];
 }
 

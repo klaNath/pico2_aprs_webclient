@@ -47,6 +47,12 @@ export const KNOWN_SETTINGS: readonly SchemaItem[] = [
     max: 1000,
   },
   {
+    key: "beacon_mode",
+    desc: "auto: beacons by the rule; manual: only when sent from the app",
+    type: "str",
+    choices: ["auto", "manual"],
+  },
+  {
     key: "tx_enabled",
     desc: "Transmit permission (the beacon switch must also be on)",
     type: "bool",
@@ -70,6 +76,14 @@ const KNOWN_BY_KEY: ReadonlyMap<string, SchemaItem> = new Map(
  * (`max: null`, a string, NaN, ...). The device's schema is not trusted: a bad constraint means
  * "no constraint", never an exception or a limit of NaN.
  */
+/** `choices` of a schema item, when it is a list of strings; otherwise undefined (no constraint). */
+export function itemChoices(item: SchemaItem): string[] | undefined {
+  const c = item.choices;
+  return Array.isArray(c) && c.length > 0 && c.every((e) => typeof e === "string")
+    ? (c as string[])
+    : undefined;
+}
+
 export function finiteLimit(v: unknown): number | undefined {
   return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }
@@ -117,6 +131,9 @@ function checkItem(item: SchemaItem, v: unknown, trusted: boolean): SettingCheck
       if (maxLen !== undefined && v.length > maxLen) {
         return { error: `at most ${maxLen} characters` };
       }
+      // A membership test only, so it is safe for items that come from the device too.
+      const choices = itemChoices(item);
+      if (choices && !choices.includes(v)) return { error: `one of ${choices.join(", ")}` };
       if (trusted && typeof item.pattern === "string" && !new RegExp(item.pattern).test(v)) {
         return { error: `must match ${item.pattern}` };
       }
@@ -228,12 +245,13 @@ export function normalizeSettings(
 }
 
 /** Changes that the UI must have the user confirm before they are sent (CLAUDE.md, transmit safety). */
-export type SettingsRisk = "tx_enable" | "callsign" | "ssid";
+export type SettingsRisk = "tx_enable" | "callsign" | "ssid" | "beacon_auto";
 
 /**
  * Which confirmations does this change need, given the values the device has now?
  * - `tx_enable`: `tx_enabled` goes to true
  * - `callsign`: the callsign changes (including to null)
+ * - `beacon_auto`: `beacon_mode` goes to "auto" (the device may send a beacon at once, §9.1)
  * - `ssid`: the SSID changes. Always, whether or not transmitting is allowed: the SSID is part of the
  *   identity on the air (CALL-SSID), so the user confirms every change (decided with the owner)
  */
@@ -247,5 +265,6 @@ export function settingsRisks(
   }
   if ("ssid" in changes && !settingEquals(changes.ssid, current.ssid)) risks.push("ssid");
   if (changes.tx_enabled === true && current.tx_enabled !== true) risks.push("tx_enable");
+  if (changes.beacon_mode === "auto" && current.beacon_mode !== "auto") risks.push("beacon_auto");
   return risks;
 }

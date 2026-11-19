@@ -16,6 +16,7 @@ export const DEFAULT_SETTINGS: SettingsValues = {
   beacon_moving_s: 60,
   beacon_still_s: 900,
   beacon_move_m: 20,
+  beacon_mode: "auto",
   tx_enabled: false,
   fx25_tx: false,
 };
@@ -52,10 +53,20 @@ export class MockDevice {
     { t: "station", src: "Q1TEST-7", last_s: 300, count: 1, own: true },
   ];
 
+  /** Seconds between two beacons that `beacon.send` refuses (§7.5). */
+  static readonly BEACON_MIN_S = 10;
+
+  /** The clock (ms). A test replaces it to move time without waiting. */
+  now: () => number = () => Date.now();
+  /** When the last beacon was built (`beacon.send`), in `now()` ms. */
+  lastBeaconAt: number | undefined;
+
   /** Test knobs. */
   /** `hello.name`; a different value makes the app treat this as another device. */
   helloName = "pico2_aprs";
   failNextSave = false;
+  /** Make the next `beacon.send` fail after the checks: `frame_too_long` or `internal`. */
+  failNextBeacon: "frame_too_long" | "internal" | undefined;
   protoOverride: number | undefined;
 
   status(): StatusMsg {
@@ -69,6 +80,7 @@ export class MockDevice {
       fix: this.fix,
       sats: this.sats,
       sw: this.sw,
+      beacon_mode: this.settings.beacon_mode as string,
       tx_enabled: this.settings.tx_enabled as boolean,
       tx_ready: this.sw && refuse === undefined,
       call: callsign === null ? "NOCALL" : ssid ? `${callsign}-${ssid}` : callsign,
@@ -81,6 +93,10 @@ export class MockDevice {
     if (this.fix >= 2) {
       s.lat = this.lat;
       s.lon = this.lon;
+      s.utc = new Date(this.now()).toISOString().replace(/\.\d{3}Z$/, "Z");
+    }
+    if (this.lastBeaconAt !== undefined) {
+      s.last_tx_s = Math.max(0, Math.floor((this.now() - this.lastBeaconAt) / 1000));
     }
     if (refuse !== undefined) s.tx_refuse = refuse;
     return s;
@@ -132,6 +148,8 @@ export class MockDevice {
         this.settings = structuredClone(DEFAULT_SETTINGS);
         return [withId({ t: "settings", values: this.settings, changed })];
       }
+      case "beacon.send":
+        return this.beaconSend(id);
       case "stations.list": {
         const out = this.stations.map((s) => withId(s));
         out.push(withId({ t: "stations.end", n: this.stations.length }));
@@ -140,6 +158,46 @@ export class MockDevice {
       default:
         return [err(id, "unknown_op", { msg: String(r.op ?? "").slice(0, 32) })];
     }
+  }
+
+  /** `beacon.send` (§7.5): check in the spec's order, then answer and add the `tx` event. */
+  private beaconSend(id: number | undefined): string[] {
+    const withId = (o: object): string => JSON.stringify(id === undefined ? o : { ...o, id });
+    if (!this.sw) return [err(id, "switch_off")];
+    const hasTime = this.fix >= 2;
+    if (!hasTime) return [err(id, "no_fix")];
+    const now = this.now();
+    if (this.lastBeaconAt !== undefined) {
+      const wait = Math.ceil(MockDevice.BEACON_MIN_S - (now - this.lastBeaconAt) / 1000);
+      if (wait > 0)
+        return [
+          JSON.stringify({
+            t: "err",
+            ...(id === undefined ? {} : { id }),
+            code: "too_soon",
+            wait_s: wait,
+          }),
+        ];
+    }
+    if (this.failNextBeacon !== undefined) {
+      const code = this.failNextBeacon;
+      this.failNextBeacon = undefined;
+      return [err(id, code)];
+    }
+    const dry = this.status().tx_ready !== true;
+    this.lastBeaconAt = now;
+    this.txCount++;
+    const callsign = this.settings.callsign as string | null;
+    const ssid = this.settings.ssid as number;
+    const call = callsign === null ? "NOCALL" : ssid ? `${callsign}-${ssid}` : callsign;
+    const path = (this.settings.path as string[]).join(",");
+    const tx = {
+      t: "tx",
+      tnc2: `${call}>SU4PX0${path ? `,${path}` : ""}:\`CIXl >/${String(this.settings.comment)}`,
+      dry,
+      utc: new Date(now).toISOString().replace(/\.\d{3}Z$/, "Z"),
+    };
+    return [withId({ t: "beacon", dry }), JSON.stringify(tx)];
   }
 
   private set(values: unknown, id: number | undefined): string {

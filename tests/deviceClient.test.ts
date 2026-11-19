@@ -1291,3 +1291,67 @@ describe("status follows a change of the settings (§8.1)", () => {
     expect(statuses[0]!.sw).toBe(false);
   });
 });
+
+describe("sendBeacon (§7.5, v0.5)", () => {
+  it("is refused without a confirmation, and sends nothing", async () => {
+    await ready();
+    const before = lines.length;
+    await expect(client.sendBeacon(undefined as never)).rejects.toMatchObject({
+      code: "confirmation_required",
+    });
+    expect(lines.length).toBe(before);
+  });
+  it("sends beacon.send and resolves with dry", async () => {
+    await ready();
+    const r = await client.sendBeacon({ dryRun: true });
+    expect(r).toMatchObject({ t: "beacon", dry: true });
+    expect(lines[lines.length - 1]).toMatchObject({ op: "beacon.send" });
+  });
+  it("the tx event comes after the answer", async () => {
+    await ready();
+    const seen: string[] = [];
+    client.on("tx", () => seen.push("tx"));
+    await client.sendBeacon({ onAir: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seen).toEqual(["tx"]);
+  });
+  it("maps too_soon to DeviceError with waitS", async () => {
+    await ready();
+    await client.sendBeacon({ dryRun: true });
+    const e = (await client.sendBeacon({ dryRun: true }).catch((x: unknown) => x)) as DeviceError;
+    expect(e).toBeInstanceOf(DeviceError);
+    expect(e.code).toBe("too_soon");
+    expect(e.waitS).toBeGreaterThan(0);
+  });
+  it("waits longer than the normal timeout for the answer", async () => {
+    await ready();
+    transport.writeDelayMs = 0;
+    vi.spyOn(transport.device, "handleLine").mockImplementation(() => []);
+    let err: unknown;
+    const p = client.sendBeacon({ dryRun: true }).catch((e: unknown) => (err = e));
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(err).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await p;
+    expect(err).toMatchObject({ code: "timeout" });
+  });
+  it("sends nothing else while it waits", async () => {
+    await ready();
+    vi.spyOn(transport.device, "handleLine").mockImplementation(() => []);
+    void client.sendBeacon({ dryRun: true }).catch(() => undefined);
+    void client.getStatus().catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(1000);
+    const ops = lines.map((l) => l.op);
+    expect(ops).not.toContain("status:2");
+    expect(ops.filter((o) => o === "status")).toHaveLength(1); // only the one from the start
+  });
+  it("a status whose beacon_mode disagrees with the cache makes it read the settings again", async () => {
+    await ready();
+    const n = lines.filter((l) => l.op === "settings.get").length;
+    transport.device.settings.beacon_mode = "manual"; // changed on the unit itself
+    transport.sendRaw(JSON.stringify(transport.device.status()));
+    await vi.advanceTimersByTimeAsync(10);
+    expect(lines.filter((l) => l.op === "settings.get").length).toBe(n + 1);
+    expect(client.settings.beacon_mode).toBe("manual");
+  });
+});

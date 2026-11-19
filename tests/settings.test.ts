@@ -336,3 +336,30 @@ describe("settingsRisks (what needs a confirmation dialog)", () => {
     expect(settingsRisks({ ...cur, tx_enabled: true }, { tx_enabled: true })).toEqual([]);
   });
 });
+
+describe("choices (§9.2) and beacon_mode (§9.1, v0.5)", () => {
+  it("beacon_mode accepts auto and manual only", () => {
+    expect(validateSetting("beacon_mode", "auto")).toEqual({ value: "auto" });
+    expect(validateSetting("beacon_mode", "manual")).toEqual({ value: "manual" });
+    expect(validateSetting("beacon_mode", "Auto")).toHaveProperty("error");
+    expect(validateSetting("beacon_mode", 1)).toHaveProperty("error");
+  });
+  it("an item the app does not know is checked against its choices", () => {
+    const schema = [{ key: "color", type: "str", choices: ["red", "blue"] }];
+    expect(validateSetting("color", "red", schema)).toEqual({ value: "red" });
+    expect(validateSetting("color", "green", schema)).toHaveProperty("error");
+  });
+  it("a malformed choices is ignored (no constraint), not an exception", () => {
+    for (const choices of [[], [1, 2], "red", null, { a: 1 }]) {
+      const schema = [{ key: "color", type: "str", choices }];
+      expect(validateSetting("color", "green", schema)).toEqual({ value: "green" });
+    }
+  });
+  it("going to auto needs the beacon_auto confirmation; manual and unchanged do not", () => {
+    const cur = { beacon_mode: "manual", tx_enabled: false };
+    expect(settingsRisks(cur, { beacon_mode: "auto" })).toEqual(["beacon_auto"]);
+    expect(settingsRisks(cur, { beacon_mode: "manual" })).toEqual([]);
+    expect(settingsRisks({ beacon_mode: "auto" }, { beacon_mode: "auto" })).toEqual([]);
+    expect(settingsRisks({ beacon_mode: "auto" }, { beacon_mode: "manual" })).toEqual([]);
+  });
+});

@@ -6,6 +6,7 @@ import { h, setText } from "../dom.ts";
 import { fieldLabel, fieldUnit, getOwn, itemDesc, widgetKindFor } from "../settingsForm.ts";
 import { settingEquals } from "../../protocol/settings.ts";
 import type { SchemaItem } from "../../protocol/types.ts";
+import { createChoiceControl } from "./choice.ts";
 import { createListControl } from "./list.ts";
 import { createMiceControl } from "./mice.ts";
 import { createNumberControl } from "./number.ts";
@@ -21,6 +22,8 @@ const HINTS: Readonly<Record<string, string>> = {
     "3-6 upper case letters and digits with at least one digit, without the SSID. Example: Q1TEST.",
   path: "Up to 2 entries such as WIDE1-1. Lower case is converted to upper case by the device.",
   comment: "Printable ASCII only, up to 40 characters.",
+  beacon_mode:
+    "Auto sends beacons by the interval rule. Manual sends only when you press Send beacon now. Switching to Auto asks for confirmation when you save.",
   tx_enabled: "Turning this on asks for confirmation when you save.",
 };
 
@@ -38,6 +41,8 @@ function makeControl(item: SchemaItem, id: string, onValue: OnValue): Control {
       return createListControl(item, id, onValue, { placeholder: "WIDE1-1" });
     case "mice":
       return createMiceControl(id, onValue);
+    case "choice":
+      return createChoiceControl(item, id, onValue);
     case "text":
       return createTextControl(item, id, onValue);
     case "number":
