@@ -4,6 +4,7 @@ import {
   beaconCase,
   beaconConfirmation,
   beaconResultText,
+  beaconTimeoutText,
   describeBeaconError,
   runBeaconSend,
 } from "../src/ui/beaconSend.ts";
@@ -70,7 +71,13 @@ describe("texts", () => {
     expect(beaconResultText({ t: "beacon", dry: true }, { tx_refuse: "TX not enabled" })).toMatch(
       /not transmitted \(TX not enabled\)/,
     );
-    expect(beaconResultText({ t: "beacon" }, undefined)).not.toMatch(/Beacon sent/);
+  });
+  it("after a timeout, last_tx_s tells whether a beacon was built (§7.5)", () => {
+    expect(beaconTimeoutText({ last_tx_s: 2, tx_ready: true }, 5.2)).toMatch(/built 2 s ago\./);
+    expect(beaconTimeoutText({ last_tx_s: 2, tx_ready: false }, 5.2)).toMatch(/dry run/);
+    expect(beaconTimeoutText({ last_tx_s: 40 }, 5.2)).toMatch(/no beacon was built/);
+    expect(beaconTimeoutText({}, 5.2)).toMatch(/no beacon was built/);
+    expect(beaconTimeoutText(undefined, 5.2)).toMatch(/not known/);
   });
   it("every error code has words", () => {
     for (const code of [
@@ -103,6 +110,10 @@ describe("runBeaconSend (the press of the button)", () => {
       sendBeacon: (c: unknown) => {
         calls.push(`send ${JSON.stringify(c)}`);
         return Promise.resolve({ t: "beacon" as const, dry: !("onAir" in (c as object)) });
+      },
+      getStatus: () => {
+        calls.push("status");
+        return Promise.resolve({ t: "status" as const, last_tx_s: 1 });
       },
       confirm: () => {
         calls.push("confirm");
@@ -154,5 +165,17 @@ describe("runBeaconSend (the press of the button)", () => {
     deps.sendBeacon = () =>
       Promise.reject(Object.assign(new Error("x"), { code: "too_soon", waitS: 3 }));
     expect(await runBeaconSend(deps)).toMatch(/Wait 3 s/);
+  });
+  it("after a timeout, asks for status and reports what it shows", async () => {
+    const { deps, calls } = setup({ statuses: [{ tx_ready: false }] });
+    deps.sendBeacon = () => Promise.reject(Object.assign(new Error("x"), { code: "timeout" }));
+    expect(await runBeaconSend(deps)).toMatch(/a beacon was built 1 s ago/);
+    expect(calls).toEqual(["status"]);
+  });
+  it("after a timeout on a lost link, does not ask and says it is not known", async () => {
+    const { deps, calls } = setup({ statuses: [{ tx_ready: false }], usable: [true, true, false] });
+    deps.sendBeacon = () => Promise.reject(Object.assign(new Error("x"), { code: "timeout" }));
+    expect(await runBeaconSend(deps)).toMatch(/not known/);
+    expect(calls).toEqual([]);
   });
 });

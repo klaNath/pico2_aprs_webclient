@@ -21,6 +21,10 @@ export interface MockTransportOptions {
   rng?: () => number;
   /** Time connect() takes (pairing, notifications). 0 = resolves at once. */
   connectDelayMs?: number;
+  /** How often the device's message queue advances (`MockDevice.tick`). 0 = never. */
+  msgTickMs?: number;
+  /** Demo: a message for this device arrives every this many ms on average. 0 = never. */
+  autoMsgMs?: number;
   /** Initial value of `writeDelayMs`. */
   writeDelayMs?: number;
 }
@@ -58,6 +62,7 @@ export class MockTransport implements Transport {
   private readonly encoder = new TextEncoder();
   private timers = new Set<ReturnType<typeof setTimeout>>();
   private statusTimer: ReturnType<typeof setInterval> | undefined;
+  private msgTimer: ReturnType<typeof setInterval> | undefined;
   /** The fields of §8.1 whose change triggers a status event, as of the last check. */
   private statusKey = "";
   private statusChangeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -73,6 +78,8 @@ export class MockTransport implements Transport {
       rxMaxMs: options.rxMaxMs ?? 15000,
       rng: options.rng ?? Math.random,
       connectDelayMs: options.connectDelayMs ?? 0,
+      msgTickMs: options.msgTickMs ?? 1000,
+      autoMsgMs: options.autoMsgMs ?? 0,
     };
     this.writeDelayMs = options.writeDelayMs ?? 0;
   }
@@ -181,8 +188,18 @@ export class MockTransport implements Transport {
   }
 
   private currentStatusKey(): string {
-    const { fix, sw, tx_enabled, tx_ready, call, beacon_mode } = this.device.status();
-    return JSON.stringify([fix, sw, tx_enabled, tx_ready, call, beacon_mode]);
+    const { fix, sw, tx_enabled, tx_ready, call, beacon_mode, msg_unread, msg_pending } =
+      this.device.status();
+    return JSON.stringify([
+      fix,
+      sw,
+      tx_enabled,
+      tx_ready,
+      call,
+      beacon_mode,
+      msg_unread,
+      msg_pending,
+    ]);
   }
 
   onData(cb: (chunk: Uint8Array) => void): () => void {
@@ -231,6 +248,21 @@ export class MockTransport implements Transport {
     return rx;
   }
 
+  /** Advance the device's message queue now and send what it produced. */
+  tickMessages(): void {
+    if (!this.connected || !this.authenticated) return;
+    for (const line of this.device.tick()) this.notify(line);
+    this.checkStatusChange();
+  }
+
+  /** A message for this device arrives now (demo and tests). */
+  receiveMessage(src: string, text: string, no?: string): void {
+    const lines = this.device.receiveMessage(src, text, no);
+    if (!this.connected || !this.authenticated) return;
+    for (const line of lines) this.notify(line);
+    this.checkStatusChange();
+  }
+
   /** Send an arbitrary line to the app (for tests of odd input). */
   sendRaw(line: string): void {
     this.notify(line);
@@ -245,6 +277,21 @@ export class MockTransport implements Transport {
       this.opts.statusIntervalMs,
     );
     if (this.opts.autoRx) this.scheduleRx();
+    if (this.opts.msgTickMs > 0) {
+      this.msgTimer = setInterval(() => this.tickMessages(), this.opts.msgTickMs);
+    }
+    if (this.opts.autoMsgMs > 0) this.scheduleMsg();
+  }
+
+  private scheduleMsg(): void {
+    const { autoMsgMs, rng } = this.opts;
+    this.later(autoMsgMs * (0.5 + rng()), () => {
+      const s = MOCK_STATIONS[Math.floor(rng() * MOCK_STATIONS.length)]!;
+      const texts = ["Hi, are you on the road?", "QSL, thanks", "See you at the meeting"];
+      const text = texts[Math.floor(rng() * texts.length)]!;
+      this.receiveMessage(s.src, text, String(Math.floor(rng() * 900) + 100));
+      this.scheduleMsg();
+    });
   }
 
   private scheduleRx(): void {
@@ -278,5 +325,7 @@ export class MockTransport implements Transport {
     this.timers.clear();
     if (this.statusTimer !== undefined) clearInterval(this.statusTimer);
     this.statusTimer = undefined;
+    if (this.msgTimer !== undefined) clearInterval(this.msgTimer);
+    this.msgTimer = undefined;
   }
 }

@@ -223,3 +223,107 @@ describe("beacon.send (§7.5, v0.5)", () => {
     expect(dev.status().utc).toBeUndefined();
   });
 });
+
+describe("APRS messages (§7.6-§7.8, v0.8)", () => {
+  let t = 1_000_000;
+  beforeEach(() => {
+    t = 1_000_000;
+    dev.now = () => t;
+    dev.settings.tx_enabled = true;
+  });
+  const parse = (lines: string[]): Obj[] => lines.map((l) => JSON.parse(l) as Obj);
+
+  it("checks in the spec's order and queues nothing on an error", () => {
+    expect(call({ op: "msg.send", id: 1, to: "Q1 AAA", text: "x" })[0]).toMatchObject({
+      code: "invalid",
+      key: "to",
+    });
+    expect(call({ op: "msg.send", id: 1, to: "Q1AAA", text: "a{b" })[0]).toMatchObject({
+      code: "invalid",
+      key: "text",
+    });
+    expect(call({ op: "msg.send", id: 1, to: "Q1TEST-7", text: "me" })[0]).toMatchObject({
+      key: "to",
+    });
+    dev.sw = false;
+    expect(call({ op: "msg.send", id: 1, to: "Q1AAA", text: "x" })[0]).toMatchObject({
+      code: "switch_off",
+    });
+    dev.sw = true;
+    dev.settings.tx_enabled = false;
+    expect(call({ op: "msg.send", id: 1, to: "Q1AAA", text: "x" })[0]).toMatchObject({
+      code: "tx_not_ready",
+      msg: "TX not enabled",
+    });
+    expect(dev.messages).toEqual([]);
+  });
+
+  it("answers pending at once, then tries with 30/60/120/240 s gaps and fails after 5", () => {
+    const r = call({ op: "msg.send", id: 9, to: "q1aaa-9", text: "Hello" })[0]!;
+    expect(r).toMatchObject({
+      t: "msg",
+      id: 9,
+      dir: "out",
+      to: "Q1AAA-9",
+      state: "pending",
+      tries: 0,
+    });
+    expect(dev.status()).toMatchObject({ msg_pending: 1 });
+    const first = parse(dev.tick());
+    expect(first[0]).toMatchObject({ t: "tx", dry: false });
+    expect(String(first[0]!.tnc2)).toContain("::Q1AAA-9  :Hello{");
+    expect(first[1]).toMatchObject({ t: "msg", tries: 1, state: "pending" });
+    expect(first[1]).not.toHaveProperty("id");
+    for (const gap of [30, 60, 120, 240]) {
+      t += (gap - 1) * 1000;
+      expect(dev.tick()).toEqual([]);
+      t += 1000;
+      expect(parse(dev.tick())[1]).toMatchObject({ state: "pending" });
+    }
+    t += 240_000;
+    expect(parse(dev.tick())).toEqual([expect.objectContaining({ state: "failed", tries: 5 })]);
+  });
+
+  it("a due try waits while the channel is busy or the switch is off, and is not counted", () => {
+    call({ op: "msg.send", id: 1, to: "Q1AAA", text: "x" });
+    dev.chBusy = true;
+    expect(dev.tick()).toEqual([]);
+    dev.chBusy = false;
+    dev.sw = false;
+    expect(dev.tick()).toEqual([]);
+    dev.sw = true;
+    expect(parse(dev.tick())[1]).toMatchObject({ tries: 1 });
+  });
+
+  it("refuses a 5th pending message, and cancel ends one", () => {
+    for (let i = 0; i < 4; i++) call({ op: "msg.send", id: i, to: "Q1AAA", text: `m${i}` });
+    expect(call({ op: "msg.send", id: 5, to: "Q1AAA", text: "x" })[0]).toMatchObject({
+      code: "queue_full",
+    });
+    const no = dev.messages[0]!.row.no;
+    expect(call({ op: "msg.cancel", id: 6, no })[0]).toMatchObject({ state: "cancelled", id: 6 });
+    expect(call({ op: "msg.cancel", id: 7, no })[0]).toMatchObject({ state: "cancelled" });
+    expect(call({ op: "msg.cancel", id: 8, no: "nope" })[0]).toMatchObject({ code: "unknown_msg" });
+  });
+
+  it("msg.list returns newest first, ends with msg.end and clears the unread count", () => {
+    call({ op: "msg.send", id: 1, to: "Q1AAA", text: "out" });
+    const inLines = parse(dev.receiveMessage("Q1BBB", "Hi", "7"));
+    expect(inLines[0]).toMatchObject({ t: "msg", dir: "in", src: "Q1BBB", no: "7" });
+    expect(String(inLines[1]!.tnc2)).toContain("::Q1BBB    :ack7");
+    expect(dev.status().msg_unread).toBe(1);
+    const list = call({ op: "msg.list", id: 3 });
+    expect(list.map((m) => m.t)).toEqual(["msg", "msg", "msg.end"]);
+    expect(list[0]).toMatchObject({ dir: "in", id: 3 });
+    expect(list[2]).toMatchObject({ n: 2 });
+    expect(dev.status().msg_unread).toBe(0);
+  });
+
+  it("demo: the addressee acknowledges after autoAckMs", () => {
+    dev.autoAckMs = 4000;
+    call({ op: "msg.send", id: 1, to: "Q1AAA", text: "x" });
+    dev.tick();
+    t += 4000;
+    expect(parse(dev.tick())).toEqual([expect.objectContaining({ state: "acked", tries: 1 })]);
+  });
+});

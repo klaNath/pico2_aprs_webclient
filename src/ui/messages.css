@@ -1,0 +1,187 @@
+/* Messages tab. Colors come from the tokens in style.css. */
+
+.msg-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.msg-conv-item {
+  padding: 0;
+  overflow: hidden;
+}
+
+.msg-conv {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.msg-conv-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+}
+
+.msg-peer {
+  font-weight: 700;
+  font-size: 1rem;
+  white-space: nowrap;
+}
+
+.msg-when {
+  margin-left: auto;
+  font-size: 0.85rem;
+}
+
+.msg-preview {
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg-badge,
+.msg-pending-tag {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+.msg-badge {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.msg-pending-tag {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.msg-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.msg-title {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.msg-thread {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.msg-bubble {
+  max-width: 85%;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+}
+
+.msg-in {
+  align-self: flex-start;
+}
+
+.msg-out {
+  align-self: flex-end;
+  border-color: var(--accent);
+}
+
+.msg-unread {
+  border-left: 4px solid var(--accent);
+}
+
+.msg-text {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.msg-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.msg-state {
+  font-weight: 600;
+}
+
+.msg-ok {
+  color: var(--ok);
+}
+
+.msg-pending {
+  color: var(--warn);
+}
+
+.msg-bad {
+  color: var(--danger);
+}
+
+.msg-compose .field {
+  margin-bottom: 4px;
+}
+
+.msg-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.msg-counter-full {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.msg-input-row {
+  display: flex;
+  gap: 8px;
+}
+
+.msg-input-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.msg-empty {
+  padding: 8px 0;
+}
+
+.tab-badge {
+  display: inline-block;
+  min-width: 1.4em;
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1.4;
+}

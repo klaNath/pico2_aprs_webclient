@@ -5,9 +5,10 @@
 import "./style.css";
 import { App } from "./store/state.ts";
 import { createConnectView } from "./ui/connectView.ts";
-import { h } from "./ui/dom.ts";
+import { h, setText } from "./ui/dom.ts";
 import { createFeedView } from "./ui/feedView.ts";
 import { createHeader } from "./ui/header.ts";
+import { createMessagesView } from "./ui/messagesView.ts";
 import { registerPwa } from "./pwa.ts";
 import { createUpdateBanner } from "./ui/updateBanner.ts";
 import { createRadarView } from "./ui/radarView.ts";
@@ -30,6 +31,7 @@ const TABS = [
   { id: "feed", label: "Feed", make: createFeedView },
   { id: "stations", label: "Stations", make: createStationsView },
   { id: "radar", label: "Radar", make: createRadarView },
+  { id: "messages", label: "Messages", make: createMessagesView },
   { id: "settings", label: "Settings", make: createSettingsView },
 ] as const;
 type TabId = (typeof TABS)[number]["id"];
@@ -46,6 +48,8 @@ const connect = createConnectView(app, demo);
 
 let current: TabId = tabFromHash(location.hash, TAB_IDS) ?? "status";
 const tabButtons = new Map<TabId, HTMLButtonElement>();
+/** Unread messages on the Messages tab. */
+const msgBadge = h("span", { class: "tab-badge", hidden: true });
 const PANEL_ID = "tabpanel";
 const main = h("main", { class: "app-main", id: PANEL_ID, attrs: { role: "tabpanel" } });
 const nav = h("nav", { class: "tabs", attrs: { role: "tablist", "aria-label": "Screens" } });
@@ -66,6 +70,7 @@ for (const t of TABS) {
       },
     },
   });
+  if (t.id === "messages") b.append(msgBadge);
   tabButtons.set(t.id, b);
   nav.append(b);
 }
@@ -151,6 +156,17 @@ function renderAll(): void {
     shownTab = current;
     tabButtons.get(current)?.scrollIntoView({ inline: "nearest", block: "nearest" });
   }
+
+  // msg.list clears the device's unread count (§7.7): read it only while the screen is shown.
+  const messagesOpen = !layout.fullConnect && current === "messages";
+  app.setMessagesOpen(messagesOpen);
+  // While the screen is shown the app's own count is the one that matters; otherwise the device
+  // may know of messages the app missed (they arrived while it was not connected).
+  const deviceUnread = messagesOpen || app.statusStale ? 0 : (app.status?.msg_unread ?? 0);
+  const unread = Math.max(app.messages.unreadCount, deviceUnread);
+  msgBadge.hidden = unread === 0;
+  setText(msgBadge, String(unread));
+  msgBadge.setAttribute("aria-label", `${unread} unread`);
 
   let ok = safeRender("header", () => header.render());
   const parts: HTMLElement[] = [notices];

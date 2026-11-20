@@ -57,12 +57,16 @@ export function txBadge(
     };
   }
   if (status.tx_ready === true) {
-    return { cls: "tx-ready", label: "TX READY", detail: "The next beacon goes on the air" };
+    return { cls: "tx-ready", label: "TX READY", detail: "Beacons and messages go on the air" };
   }
   const why =
     status.tx_refuse ??
     (status.sw === false ? "Beacon switch is off" : "Transmit conditions are not met");
-  return { cls: "tx-dry", label: "TX OFF", detail: `${why} (beacons are a dry run)` };
+  return {
+    cls: "tx-dry",
+    label: "TX OFF",
+    detail: `${why} (beacons are a dry run, messages are not sent)`,
+  };
 }
 
 export function createHeader(app: App): View {

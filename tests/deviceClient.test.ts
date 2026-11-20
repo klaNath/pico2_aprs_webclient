@@ -1323,15 +1323,15 @@ describe("sendBeacon (§7.5, v0.5)", () => {
     expect(e.code).toBe("too_soon");
     expect(e.waitS).toBeGreaterThan(0);
   });
-  it("waits longer than the normal timeout for the answer", async () => {
+  it("times out after the spec's recommended 5 s (§7.5)", async () => {
     await ready();
     transport.writeDelayMs = 0;
     vi.spyOn(transport.device, "handleLine").mockImplementation(() => []);
     let err: unknown;
     const p = client.sendBeacon({ dryRun: true }).catch((e: unknown) => (err = e));
-    await vi.advanceTimersByTimeAsync(6000);
+    await vi.advanceTimersByTimeAsync(4900);
     expect(err).toBeUndefined();
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(200);
     await p;
     expect(err).toMatchObject({ code: "timeout" });
   });
@@ -1353,5 +1353,74 @@ describe("sendBeacon (§7.5, v0.5)", () => {
     await vi.advanceTimersByTimeAsync(10);
     expect(lines.filter((l) => l.op === "settings.get").length).toBe(n + 1);
     expect(client.settings.beacon_mode).toBe("manual");
+  });
+});
+
+describe("messages (§7.6-§7.8, v0.8)", () => {
+  beforeEach(() => {
+    transport.device.settings.tx_enabled = true;
+  });
+  const ok = () => ({ connectionId: client.connectionId });
+
+  it("needs the confirmation of this connection", async () => {
+    await ready();
+    await expect(client.sendMessage("Q1AAA", "x", { connectionId: -1 })).rejects.toMatchObject({
+      code: "confirmation_required",
+    });
+    const old = client.connectionId;
+    transport.simulateDisconnect();
+    await client.start();
+    await expect(client.sendMessage("Q1AAA", "x", { connectionId: old })).rejects.toMatchObject({
+      code: "confirmation_required",
+    });
+    expect(lines.some((l) => l.op === "msg.send")).toBe(false);
+  });
+
+  it("checks to and text before sending", async () => {
+    await ready();
+    await expect(client.sendMessage("Q1TEST-7", "x", ok())).rejects.toMatchObject({
+      code: "invalid",
+      key: "to",
+    });
+    await expect(client.sendMessage("Q1AAA", "日本語", ok())).rejects.toMatchObject({
+      code: "invalid",
+      key: "text",
+    });
+    await expect(client.sendMessage("Q1AAA", "x".repeat(68), ok())).rejects.toMatchObject({
+      key: "text",
+    });
+    expect(lines.some((l) => l.op === "msg.send")).toBe(false);
+  });
+
+  it("sends uppercase, returns the pending row, and emits later changes as msg events", async () => {
+    await ready();
+    const events: unknown[] = [];
+    client.on("msg", (m) => events.push(m));
+    const m = await client.sendMessage("q1aaa-9", "Hello", ok());
+    expect(lines.at(-1)).toMatchObject({ op: "msg.send", to: "Q1AAA-9", text: "Hello" });
+    expect(m).toMatchObject({ t: "msg", dir: "out", state: "pending", tries: 0 });
+    expect(events).toEqual([]); // the answer is not an event
+    transport.tickMessages();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(events).toEqual([expect.objectContaining({ state: "pending", tries: 1 })]);
+  });
+
+  it("lists the messages until msg.end and cancels one", async () => {
+    await ready();
+    const m = await client.sendMessage("Q1AAA", "one", ok());
+    transport.receiveMessage("Q1BBB", "Hi", "3");
+    await vi.advanceTimersByTimeAsync(0);
+    const list = await client.listMessages();
+    expect(list.map((x) => x.dir)).toEqual(["in", "out"]);
+    expect(await client.cancelMessage(m.no!)).toMatchObject({ state: "cancelled" });
+    await expect(client.cancelMessage("999")).rejects.toMatchObject({ code: "unknown_msg" });
+  });
+
+  it("maps the device's refusals", async () => {
+    await ready();
+    transport.device.sw = false;
+    await expect(client.sendMessage("Q1AAA", "x", ok())).rejects.toMatchObject({
+      code: "switch_off",
+    });
   });
 });

@@ -4,9 +4,23 @@
 import type { AprsPacket } from "../aprs/types.ts";
 import { parseAprs } from "../aprs/parse.ts";
 import type { LatLon } from "../aprs/geo.ts";
-import { DeviceClient, STATUS_STALE_MS, type ClientState } from "../client/deviceClient.ts";
+import {
+  DeviceClient,
+  STATUS_STALE_MS,
+  type ClientState,
+  type MessageConfirmation,
+} from "../client/deviceClient.ts";
 import { describeConnectError } from "./connectError.ts";
-import type { ErrMsg, HelloMsg, RxMsg, StationMsg, StatusMsg, TxMsg } from "../protocol/types.ts";
+import type {
+  ErrMsg,
+  HelloMsg,
+  MsgMsg,
+  RxMsg,
+  StationMsg,
+  StatusMsg,
+  TxMsg,
+} from "../protocol/types.ts";
+import { MessageStore } from "./messages.ts";
 import { MockTransport, type MockTransportOptions } from "../transport/mock/mockTransport.ts";
 import type { Transport } from "../transport/transport.ts";
 import {
@@ -118,6 +132,19 @@ export class App {
   notice: string | undefined;
   /** Device `err` events that were not a reply to a request. Oldest first, at most 20. */
   recentErrors: DeviceErrorRecord[] = [];
+  /** APRS messages (§7.6-§7.8). Kept across disconnects, like the feed. */
+  readonly messages = new MessageStore();
+  /** True while msg.list is running. */
+  messagesLoading = false;
+  /** Why the last msg.list failed, for the Messages screen. */
+  messagesError: string | undefined;
+
+  /** Whether the Messages screen is on screen (main.ts sets it). msg.list runs only then. */
+  private messagesOpen = false;
+  /** `status.dropped` last seen on this connection: a rise may have lost `msg` events (§8.5). */
+  private lastDropped: number | undefined;
+  /** The client and connection for which the user confirmed sending messages. */
+  private msgConfirmed: { client: DeviceClient; connectionId: number } | undefined;
 
   private seq = 0;
   private readonly listeners = new Set<() => void>();
@@ -191,10 +218,14 @@ export class App {
   /** Connect to the simulated device (Demo). */
   async connectMock(opts: { fast?: boolean } = {}): Promise<void> {
     const rx = opts.fast ? { rxMinMs: 300, rxMaxMs: 900 } : {};
-    await this.connectWith(
-      this.createMockTransport({ autoRx: true, connectDelayMs: 400, ...rx }),
-      true,
-    );
+    const transport = this.createMockTransport({
+      autoRx: true,
+      connectDelayMs: 400,
+      autoMsgMs: opts.fast ? 20_000 : 90_000,
+      ...rx,
+    });
+    transport.device.autoAckMs = 4000; // the demo's other stations acknowledge
+    await this.connectWith(transport, true);
   }
 
   /** Whether Web Bluetooth exists here (Chrome, HTTPS). */
@@ -305,12 +336,13 @@ export class App {
       this.offs = [
         on("state", (s) => this.onClientState(s)),
         on("hello", (h) => this.onHello(h, transport, mock)),
-        on("status", () => this.notify()),
+        on("status", (st) => this.onStatus(st)),
         on("statusStale", () => this.notify()),
         on("schema", () => this.notify()),
         on("settings", () => this.notify()),
         on("rx", (m) => this.onRx(m)),
         on("tx", (m) => this.onTx(m)),
+        on("msg", (m) => this.onMsg(m)),
         on("stations", (list) => this.onStations(list)),
         on("deviceError", (e) => this.onDeviceError(e)),
       ];
@@ -334,6 +366,7 @@ export class App {
 
   private onClientState(s: ClientState): void {
     if (s === "connecting") {
+      this.lastDropped = undefined; // `dropped` counts from 0 on each connection (§8.5)
       this.kind = undefined;
       this.notice = undefined;
     } else if (s === "disconnected") {
@@ -344,6 +377,8 @@ export class App {
       if (this.kind === "link" && !this.reconnect) this.scheduleReconnect(1);
     } else if (s === "ready") {
       this.stopReconnect();
+      // Messages may have come and gone while the link was down.
+      if (this.messagesOpen) void this.refreshMessages();
     } else if (s === "proto_mismatch") {
       this.stopReconnect(); // trying again cannot help
     }
@@ -404,6 +439,7 @@ export class App {
       this.feed = [];
       this.stations = new Map();
       this.recentErrors = [];
+      this.messages.clear();
     }
     this.deviceKey = key;
     this.notify();
@@ -414,6 +450,110 @@ export class App {
     this.recentErrors.push({ at: Date.now(), text });
     if (this.recentErrors.length > MAX_RECENT_ERRORS) {
       this.recentErrors.splice(0, this.recentErrors.length - MAX_RECENT_ERRORS);
+    }
+    this.notify();
+  }
+
+  // ---- messages ---------------------------------------------------------------------------
+
+  /**
+   * The Messages screen came on or went off screen. msg.list clears the device's unread count
+   * (§7.7), so the list is read only when the user looks at the messages.
+   */
+  setMessagesOpen(open: boolean): void {
+    if (open === this.messagesOpen) return;
+    this.messagesOpen = open;
+    if (open && this.state === "ready") void this.refreshMessages();
+  }
+
+  /** Read the device's messages (msg.list). One at a time. */
+  async refreshMessages(): Promise<void> {
+    const client = this.client;
+    if (!client || client.state !== "ready" || this.messagesLoading) return;
+    const unreadBefore = client.lastStatus?.msg_unread ?? 0;
+    this.messagesLoading = true;
+    this.notify();
+    try {
+      const list = await client.listMessages();
+      if (this.client === client) {
+        this.messages.applyList(list, Date.now(), unreadBefore);
+        this.messagesError = undefined;
+      }
+    } catch (e) {
+      if (this.client === client) {
+        const code = (e as { code?: unknown }).code;
+        this.messagesError =
+          code === "unknown_op"
+            ? "This tracker's firmware does not support messages yet."
+            : "Could not read the messages from the tracker.";
+      }
+    } finally {
+      this.messagesLoading = false;
+      this.notify();
+    }
+  }
+
+  /** The confirmation for `sendMessage`, if the user gave it on this connection. */
+  messageConfirmation(): MessageConfirmation | undefined {
+    const c = this.client;
+    const m = this.msgConfirmed;
+    return c && m && m.client === c && m.connectionId === c.connectionId
+      ? { connectionId: m.connectionId }
+      : undefined;
+  }
+
+  /** The user confirmed sending messages: valid until this connection ends. */
+  confirmMessages(): MessageConfirmation | undefined {
+    const c = this.client;
+    if (!c || c.state !== "ready") return undefined;
+    this.msgConfirmed = { client: c, connectionId: c.connectionId };
+    return { connectionId: c.connectionId };
+  }
+
+  /** msg.send. Throws the client's DeviceError. */
+  async sendMessage(to: string, text: string, confirmation: MessageConfirmation): Promise<MsgMsg> {
+    const client = this.client;
+    if (!client) throw Object.assign(new Error("not connected"), { code: "not_connected" });
+    const m = await client.sendMessage(to, text, confirmation);
+    if (this.client === client) {
+      this.messages.upsert(m, Date.now());
+      this.notify();
+    }
+    return m;
+  }
+
+  /** msg.cancel. Throws the client's DeviceError. */
+  async cancelMessage(no: string): Promise<MsgMsg> {
+    const client = this.client;
+    if (!client) throw Object.assign(new Error("not connected"), { code: "not_connected" });
+    const m = await client.cancelMessage(no);
+    if (this.client === client) {
+      this.messages.upsert(m, Date.now());
+      this.notify();
+    }
+    return m;
+  }
+
+  /** The user opened a conversation. */
+  markMessagesRead(peer: string): void {
+    if (this.messages.markRead(peer)) this.notify();
+  }
+
+  private onMsg(m: MsgMsg): void {
+    this.messages.upsert(m, Date.now(), true);
+    // The user is looking at the messages: let the device clear its unread count too (§7.7).
+    if (m.dir === "in" && this.messagesOpen) void this.refreshMessages();
+    this.notify();
+  }
+
+  private onStatus(st: StatusMsg): void {
+    const d = st.dropped;
+    if (typeof d === "number") {
+      // When the event queue overflows, a `msg` event can be lost too (§8.5): read the list again.
+      if (this.lastDropped !== undefined && d > this.lastDropped && this.messagesOpen) {
+        void this.refreshMessages();
+      }
+      this.lastDropped = d;
     }
     this.notify();
   }

@@ -2,9 +2,27 @@
 // No timers and no BLE: `handleLine` takes one request line and returns the response lines.
 
 import { MAX_LINE_BYTES } from "../../protocol/framing.ts";
+import { checkMsgText, checkMsgTo, MSG_MAX_TRIES, MSG_QUEUE_MAX } from "../../protocol/messages.ts";
 import { KNOWN_SETTINGS, validateSetting } from "../../protocol/settings.ts";
 import { PROTO_VERSION } from "../../protocol/types.ts";
-import type { SettingValue, SettingsValues, StationMsg, StatusMsg } from "../../protocol/types.ts";
+import type {
+  MsgMsg,
+  SettingValue,
+  SettingsValues,
+  StationMsg,
+  StatusMsg,
+} from "../../protocol/types.ts";
+
+/** Seconds between the tries of a message (§7.6), and after the last one until `failed`. */
+export const MSG_RETRY_S = [30, 60, 120, 240, 240] as const;
+/** Messages the device keeps (§7.7). */
+const MSG_KEEP = 16;
+
+interface MockMessage {
+  row: MsgMsg;
+  /** When the next try (or, after the last one, `failed`) is due, in `now()` ms. */
+  dueAt: number;
+}
 
 export const DEFAULT_SETTINGS: SettingsValues = {
   callsign: "Q1TEST",
@@ -68,6 +86,16 @@ export class MockDevice {
   /** Make the next `beacon.send` fail after the checks: `frame_too_long` or `internal`. */
   failNextBeacon: "frame_too_long" | "internal" | undefined;
   protoOverride: number | undefined;
+  /** Demo: the addressee acknowledges each message this long after a try (undefined = never). */
+  autoAckMs: number | undefined;
+  /** Whether the channel is judged busy (§7.9). Due messages wait while it is. */
+  chBusy = false;
+
+  /** Messages kept, newest first (§7.7). */
+  messages: MockMessage[] = [];
+  msgUnread = 0;
+  private nextMsgNo = 12;
+  private lastAckAt = new Map<string, number>();
 
   status(): StatusMsg {
     const callsign = this.settings.callsign as string | null;
@@ -89,6 +117,9 @@ export class MockDevice {
       lvl_db: this.lvlDb,
       sd: "no card",
       dropped: this.dropped,
+      msg_unread: this.msgUnread,
+      msg_pending: this.messages.filter((m) => m.row.state === "pending").length,
+      ch_busy: this.chBusy,
     };
     if (this.fix >= 2) {
       s.lat = this.lat;
@@ -150,6 +181,21 @@ export class MockDevice {
       }
       case "beacon.send":
         return this.beaconSend(id);
+      case "msg.send":
+        return this.msgSend(id, r.to, r.text);
+      case "msg.list": {
+        this.msgUnread = 0;
+        const out = this.messages.map((m) => withId(m.row));
+        out.push(withId({ t: "msg.end", n: this.messages.length }));
+        return out;
+      }
+      case "msg.cancel": {
+        if (typeof r.no !== "string") return [err(id, "invalid", { key: "no", msg: "string" })];
+        const m = this.messages.find((x) => x.row.dir === "out" && x.row.no === r.no);
+        if (!m) return [err(id, "unknown_msg")];
+        if (m.row.state === "pending") m.row.state = "cancelled";
+        return [withId(m.row)];
+      }
       case "stations.list": {
         const out = this.stations.map((s) => withId(s));
         out.push(withId({ t: "stations.end", n: this.stations.length }));
@@ -158,6 +204,134 @@ export class MockDevice {
       default:
         return [err(id, "unknown_op", { msg: String(r.op ?? "").slice(0, 32) })];
     }
+  }
+
+  private ownCall(): string {
+    const callsign = this.settings.callsign as string | null;
+    const ssid = this.settings.ssid as number;
+    return callsign === null ? "NOCALL" : ssid ? `${callsign}-${ssid}` : callsign;
+  }
+
+  private utc(ms: number): string {
+    return new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+  }
+
+  /** `msg.send` (§7.6): check in the spec's order, then queue. The first try is made by `tick`. */
+  private msgSend(id: number | undefined, to: unknown, text: unknown): string[] {
+    const withId = (o: object): string => JSON.stringify(id === undefined ? o : { ...o, id });
+    if (typeof to !== "string" || checkMsgTo(to, this.ownCall()) !== undefined) {
+      return [err(id, "invalid", { key: "to", msg: "callsign-SSID, 1-9 characters" })];
+    }
+    if (typeof text !== "string" || checkMsgText(text) !== undefined) {
+      return [err(id, "invalid", { key: "text", msg: "1-67 printable ASCII, no | ~ {" })];
+    }
+    if (!this.sw) return [err(id, "switch_off")];
+    const refuse = this.status().tx_refuse;
+    if (refuse !== undefined) return [err(id, "tx_not_ready", { msg: refuse })];
+    if (this.messages.filter((m) => m.row.state === "pending").length >= MSG_QUEUE_MAX) {
+      return [err(id, "queue_full")];
+    }
+    const now = this.now();
+    const row: MsgMsg = {
+      t: "msg",
+      dir: "out",
+      no: String(this.nextMsgNo++),
+      to: to.toUpperCase(),
+      text,
+      state: "pending",
+      tries: 0,
+      utc: this.utc(now),
+    };
+    this.keep({ row, dueAt: now });
+    return [withId(row)];
+  }
+
+  private keep(m: MockMessage): void {
+    this.messages.unshift(m);
+    // The 16 newest are kept; a pending message is never dropped (§7.7).
+    while (this.messages.length > MSG_KEEP) {
+      const i = this.messages.findLastIndex((x) => x.row.state !== "pending");
+      if (i < 0) break;
+      this.messages.splice(i, 1);
+    }
+  }
+
+  private path(): string {
+    const path = (this.settings.path as string[]).join(",");
+    return path ? `,${path}` : "";
+  }
+
+  /**
+   * Advance the message queue to `now()`: make due tries (when the switch is on, the gate allows it
+   * and the channel is clear), end messages as `failed`, and deliver demo acknowledgements.
+   * Returns the event lines (`tx`, `msg`).
+   */
+  tick(): string[] {
+    const out: string[] = [];
+    const now = this.now();
+    const canSend = this.sw && this.status().tx_ready === true && !this.chBusy;
+    for (const m of this.messages) {
+      const r = m.row;
+      if (r.state !== "pending") continue;
+      const tries = r.tries ?? 0;
+      if (
+        this.autoAckMs !== undefined &&
+        tries > 0 &&
+        now >= (this.lastAckAt.get(r.no!) ?? Infinity)
+      ) {
+        r.state = "acked";
+        out.push(JSON.stringify(r));
+        continue;
+      }
+      if (now < m.dueAt) continue;
+      if (tries >= MSG_MAX_TRIES) {
+        r.state = "failed";
+        out.push(JSON.stringify(r));
+        continue;
+      }
+      if (!canSend) continue; // a due try waits, and is not counted
+      r.tries = tries + 1;
+      this.txCount++;
+      m.dueAt = now + MSG_RETRY_S[tries]! * 1000;
+      if (this.autoAckMs !== undefined) this.lastAckAt.set(r.no!, now + this.autoAckMs);
+      const addressee = (r.to ?? "").padEnd(9, " ");
+      out.push(
+        JSON.stringify({
+          t: "tx",
+          tnc2: `${this.ownCall()}>APRS${this.path()}::${addressee}:${r.text}{${r.no}`,
+          dry: false,
+          utc: this.utc(now),
+        }),
+        JSON.stringify(r),
+      );
+    }
+    return out;
+  }
+
+  /**
+   * A message addressed to this device arrives (demo and tests). Returns the `msg` event and, for
+   * a numbered message when the device can transmit, the `tx` event of its acknowledgement.
+   */
+  receiveMessage(src: string, text: string, no?: string): string[] {
+    const now = this.now();
+    const row: MsgMsg = { t: "msg", dir: "in", src, text, utc: this.utc(now) };
+    if (no !== undefined) row.no = no;
+    this.keep({ row, dueAt: now });
+    this.msgUnread++;
+    this.rxCount++;
+    const out = [JSON.stringify(row)];
+    if (no !== undefined && this.sw && this.status().tx_ready === true) {
+      this.txCount++;
+      out.push(
+        JSON.stringify({
+          t: "tx",
+          tnc2: `${this.ownCall()}>APRS${this.path()}::${src.padEnd(9, " ")}:ack${no}`,
+          dry: false,
+          utc: this.utc(now),
+        }),
+      );
+    }
+    return out;
   }
 
   /** `beacon.send` (§7.5): check in the spec's order, then answer and add the `tx` event. */

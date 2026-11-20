@@ -80,6 +80,7 @@ export function createStatusView(app: App): View {
     app.notify();
     void runBeaconSend({
       sendBeacon: (c) => client.sendBeacon(c),
+      getStatus: () => client.getStatus(),
       confirm: (o) => confirmDialog(o),
       current: () => ({
         usable: app.client === client && app.state === "ready" && !app.statusStale,
@@ -170,7 +171,7 @@ export function createStatusView(app: App): View {
               ? NO_VALUE
               : fmtAge(next),
         ),
-        // §8.1: last_tx_s and tx_count count dry runs too, so they say "beacon", not "transmit".
+        // §8.1: last_tx_s counts beacons only, dry runs included.
         ...row(
           "Last beacon",
           stale
@@ -179,9 +180,21 @@ export function createStatusView(app: App): View {
               ? "never"
               : `${fmtAge(s.last_tx_s)} ago${dryRun}`,
         ),
+        // tx_count counts every packet built to send, dry runs included (§8.1, §8.3).
         ...row(
-          "Received / Beacons",
+          "Received / Sent",
           stale ? NO_VALUE : `${s?.rx_count ?? NO_VALUE} / ${s?.tx_count ?? NO_VALUE}${dryRun}`,
+        ),
+        // §7.9: judged from the received audio; automatic beacons and messages wait while busy.
+        ...row(
+          "Channel",
+          stale || s?.ch_busy === undefined ? NO_VALUE : s.ch_busy ? "Busy" : "Clear",
+        ),
+        ...row(
+          "Messages",
+          stale || (s?.msg_unread === undefined && s?.msg_pending === undefined)
+            ? NO_VALUE
+            : `${s?.msg_unread ?? 0} unread · ${s?.msg_pending ?? 0} sending`,
         ),
         ...row("SD card", v(s?.sd)),
         ...row("Dropped rx", v(s?.dropped)),

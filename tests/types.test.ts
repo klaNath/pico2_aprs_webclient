@@ -115,3 +115,35 @@ describe("parseMessage: beacon.send (§7.5, v0.5)", () => {
     expect(parseMessage('{"t":"err","code":"too_soon","wait_s":"4"}')).toHaveProperty("error");
   });
 });
+
+describe("parseMessage: v0.6-v0.8 additions", () => {
+  it("a beacon answer always carries dry (§8.7)", () => {
+    expect(parseMessage('{"t":"beacon","id":7}')).toMatchObject({
+      error: expect.any(String),
+      id: 7,
+    });
+  });
+  it("accepts the msg examples of §7.6-§7.8", () => {
+    const ok = [
+      '{"t":"msg","id":9,"dir":"out","no":"12","to":"Q1AAA-9","text":"Hello","state":"pending","tries":0,"utc":"2026-11-16T03:04:05Z"}',
+      '{"t":"msg","id":10,"dir":"in","no":"7","src":"Q1AAA-9","text":"Hi there","utc":"2026-11-16T03:10:00Z"}',
+      '{"t":"msg","dir":"in","src":"Q1AAA-9","text":"no number"}',
+      '{"t":"msg","dir":"out","no":"12","to":"Q1AAA-9","text":"Hello","state":"some_new_state","tries":2}',
+      '{"t":"msg.end","id":10,"n":2}',
+      '{"t":"status","msg_unread":1,"msg_pending":0,"ch_busy":false}',
+      '{"t":"err","id":9,"code":"queue_full","msg":"4 pending"}',
+    ];
+    for (const line of ok) expect(isParseError(parseMessage(line)), line).toBe(false);
+  });
+  it("rejects msg lines with the wrong types", () => {
+    const bad = [
+      '{"t":"msg","id":9}',
+      '{"t":"msg","dir":"out","no":12}',
+      '{"t":"msg","dir":"out","no":"12","tries":"1"}',
+      '{"t":"msg.end","n":"2"}',
+      '{"t":"status","ch_busy":"no"}',
+      '{"t":"status","msg_unread":"1"}',
+    ];
+    for (const line of bad) expect(isParseError(parseMessage(line)), line).toBe(true);
+  });
+});

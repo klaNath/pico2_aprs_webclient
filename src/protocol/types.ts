@@ -12,6 +12,9 @@ export const OPS = [
   "settings.reset",
   "stations.list",
   "beacon.send",
+  "msg.send",
+  "msg.list",
+  "msg.cancel",
 ] as const;
 export type Op = (typeof OPS)[number];
 
@@ -22,6 +25,12 @@ export interface Request {
   op: Op;
   id?: number;
   values?: SettingsValues;
+  /** `msg.send`: the addressee (§7.6). */
+  to?: string;
+  /** `msg.send`: the message text (§7.6). */
+  text?: string;
+  /** `msg.cancel`: the message number (§7.8). */
+  no?: string;
 }
 
 export interface HelloMsg {
@@ -54,6 +63,12 @@ export interface StatusMsg {
   lvl_db?: number;
   sd?: string;
   dropped?: number;
+  /** Messages received for this device since the last `msg.list` (§8.1). */
+  msg_unread?: number;
+  /** Messages sent by the app that are still `pending` (§8.1). */
+  msg_pending?: number;
+  /** Whether the channel is judged busy now (§7.9). A change does not trigger an event. */
+  ch_busy?: boolean;
 }
 
 export interface RxMsg {
@@ -83,8 +98,48 @@ export interface TxMsg {
 export interface BeaconMsg {
   t: "beacon";
   id?: number;
-  /** True when the transmit gate refused: recorded, not sent on the air. */
-  dry?: boolean;
+  /** Always present (§8.7). True when the transmit gate refused: recorded, not sent on the air. */
+  dry: boolean;
+}
+
+/** States of a sent message (§8.8). More may be added: treat an unknown one as ended. */
+export const MSG_STATES = [
+  "pending",
+  "acked",
+  "rejected",
+  "failed",
+  "cancelled",
+  "stopped",
+] as const;
+export type MsgState = (typeof MSG_STATES)[number] | (string & {});
+
+/**
+ * One APRS message (§8.8): the answer to `msg.send` and `msg.cancel`, each row of `msg.list`
+ * (all with `id`), or an event (no `id`). Provisional in the spec.
+ */
+export interface MsgMsg {
+  t: "msg";
+  id?: number;
+  /** "in": received, addressed to this device. "out": sent from the app. */
+  dir: "in" | "out" | (string & {});
+  /** Message number, an opaque string. Always present for "out". */
+  no?: string;
+  /** "in" only: the sender. */
+  src?: string;
+  /** "out" only: the addressee. */
+  to?: string;
+  text?: string;
+  /** "out" only. */
+  state?: MsgState;
+  /** "out" only: transmissions so far. */
+  tries?: number;
+  utc?: string;
+}
+
+export interface MsgEndMsg {
+  t: "msg.end";
+  id?: number;
+  n?: number;
 }
 
 export interface StationMsg {
@@ -150,6 +205,9 @@ export const KNOWN_ERR_CODES = [
   "no_fix",
   "too_soon",
   "frame_too_long",
+  "tx_not_ready",
+  "queue_full",
+  "unknown_msg",
 ] as const;
 export type ErrCode = (typeof KNOWN_ERR_CODES)[number] | (string & {});
 
@@ -177,6 +235,8 @@ export type Incoming =
   | BeaconMsg
   | StationMsg
   | StationsEndMsg
+  | MsgMsg
+  | MsgEndMsg
   | SchemaMsg
   | SettingsMsg
   | ErrMsg
@@ -235,8 +295,10 @@ const SHAPES: Record<string, Shape> = {
       "tx_count",
       "lvl_db",
       "dropped",
+      "msg_unread",
+      "msg_pending",
     ],
-    bool: ["sw", "tx_enabled", "tx_ready"],
+    bool: ["sw", "tx_enabled", "tx_ready", "ch_busy"],
     str: ["utc", "tx_refuse", "call", "sd", "beacon_mode"],
   },
   rx: {
@@ -246,7 +308,7 @@ const SHAPES: Record<string, Shape> = {
     bool: ["clip"],
   },
   tx: { required: ["tnc2"], str: ["tnc2", "utc"], bool: ["dry"] },
-  beacon: { bool: ["dry"] },
+  beacon: { required: ["dry"], bool: ["dry"] },
   station: {
     required: ["src"],
     str: ["src"],
@@ -254,6 +316,12 @@ const SHAPES: Record<string, Shape> = {
     bool: ["own"],
   },
   "stations.end": { num: ["n"] },
+  msg: {
+    required: ["dir"],
+    str: ["dir", "no", "src", "to", "text", "state", "utc"],
+    num: ["tries"],
+  },
+  "msg.end": { num: ["n"] },
   err: { required: ["code"], str: ["code", "key", "msg"], num: ["wait_s"] },
 };
 

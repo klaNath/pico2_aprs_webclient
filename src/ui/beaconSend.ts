@@ -76,9 +76,24 @@ export function beaconResultText(
     const why = status?.tx_refuse ? ` (${status.tx_refuse})` : "";
     return `Dry run: the beacon was recorded but not transmitted${why}.`;
   }
-  if (msg.dry === false) return "Beacon sent.";
-  // The device did not say: do not claim that it went on the air.
-  return "The device answered, but did not say whether the beacon was transmitted. Check the Feed.";
+  return "Beacon sent.";
+}
+
+/**
+ * After a timeout the spec says to ask for `status` and look at `last_tx_s` (§7.5). `elapsedS` is
+ * the time since the button was pressed. A beacon built within that time was most likely this one
+ * (an automatic beacon could also have been due, so the text says "a beacon").
+ */
+export function beaconTimeoutText(
+  status: Pick<StatusMsg, "last_tx_s" | "tx_ready"> | undefined,
+  elapsedS: number,
+): string {
+  if (status === undefined) return describeBeaconError({ code: "timeout" });
+  if (status.last_tx_s !== undefined && status.last_tx_s <= elapsedS + 1) {
+    const dry = status.tx_ready === false ? " (as a dry run)" : "";
+    return `The device answered late, but a beacon was built ${Math.round(status.last_tx_s)} s ago${dry}. Check the Feed.`;
+  }
+  return "The device did not answer in time, and no beacon was built since you pressed the button.";
 }
 
 /** Words for an error from `sendBeacon`. Never shows a bare internal code. */
@@ -95,7 +110,8 @@ export function describeBeaconError(e: unknown): string {
         ? `Not sent: the last beacon was just sent. Wait ${waitS} s.`
         : "Not sent: the last beacon was just sent. Wait a little.";
     case "frame_too_long":
-      return "Not sent: the beacon does not fit in the transmit buffer. Shorten the comment in Settings.";
+      // Cannot happen with the current setting limits (§7.5), but the code is kept.
+      return "Not sent: the beacon does not fit in the transmit buffer. Shorten the comment or the path in Settings.";
     case "internal":
       return "The transmission failed inside the tracker. It restarts, so the connection will drop.";
     case "busy":
@@ -125,6 +141,10 @@ export function confirmationFor(c: "onAir" | "dryRun"): BeaconConfirmation {
 /** What the flow needs from the app. `current()` is read again after the dialog. */
 export interface BeaconFlowDeps {
   sendBeacon(confirmation: BeaconConfirmation): Promise<BeaconMsg>;
+  /** Ask the device for `status` (used after a timeout, §7.5). */
+  getStatus(): Promise<StatusMsg>;
+  /** Date.now(), replaceable in tests. */
+  now?(): number;
   confirm(options: ConfirmOptions): Promise<boolean>;
   /** The state now: `usable` is false when disconnected, stale, or a different connection. */
   current(): { usable: boolean; status: StatusMsg | undefined };
@@ -149,7 +169,21 @@ export async function runBeaconSend(deps: BeaconFlowDeps): Promise<string | unde
     if (!now.usable || (beaconCase(now.status) ?? "onAir") !== first) {
       return "The transmit state changed. Nothing was sent. Check it and press the button again.";
     }
-    return beaconResultText(await deps.sendBeacon(confirmationFor(first)), now.status);
+    const clock = deps.now ?? Date.now;
+    const sentAt = clock();
+    try {
+      return beaconResultText(await deps.sendBeacon(confirmationFor(first)), now.status);
+    } catch (e) {
+      if ((e as { code?: unknown } | null)?.code !== "timeout") throw e;
+      // Not known whether it was built: ask for status while the link is still up (§7.5).
+      let status: StatusMsg | undefined;
+      try {
+        if (deps.current().usable) status = await deps.getStatus();
+      } catch {
+        status = undefined;
+      }
+      return beaconTimeoutText(status, (clock() - sentAt) / 1000);
+    }
   } catch (e) {
     return describeBeaconError(e);
   }

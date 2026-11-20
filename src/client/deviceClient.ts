@@ -12,12 +12,14 @@ import {
 } from "../protocol/framing.ts";
 import { normalizeSettings, settingEquals, settingsRisks } from "../protocol/settings.ts";
 import type { SettingsRisk } from "../protocol/settings.ts";
+import { checkMsgText, checkMsgTo, normalizeTo } from "../protocol/messages.ts";
 import { PROTO_VERSION, isParseError, parseMessage } from "../protocol/types.ts";
 import type {
   BeaconMsg,
   ErrMsg,
   HelloMsg,
   Incoming,
+  MsgMsg,
   ParseError,
   Request,
   RxMsg,
@@ -45,6 +47,8 @@ export type ClientEvents = {
   rx: RxMsg;
   tx: TxMsg;
   stations: StationMsg[];
+  /** A `msg` event (no id): a message received for this device, or a change of a sent one (§8.8). */
+  msg: MsgMsg;
   schema: SchemaItem[];
   settings: SettingsMsg;
   /** An `err` that is not the answer to a pending request. */
@@ -66,7 +70,8 @@ export interface DeviceClientOptions {
   busyRetryDelayMs?: number;
   /**
    * How long to wait for the answer to `beacon.send`. The device answers after the transmission
-   * ends (about 1-2 s, §7.5), and the spec gives no upper limit.
+   * ends: about 0.8-1.7 s, at most about 2 s, and within about 3 s it either answers or restarts
+   * (§7.5). The spec recommends 5 s.
    */
   beaconTimeoutMs?: number;
   /** Bytes per write, 1 to MAX_WRITE_BYTES (§5.2). Larger values are clamped to 20. */
@@ -115,9 +120,23 @@ export interface SetSettingsOptions {
  */
 export type BeaconConfirmation = { onAir: true } | { dryRun: true };
 
+/**
+ * Proof that the user confirmed sending messages on this connection (`connectionId`). Required by
+ * `sendMessage`: a message goes on the air, and is retried by the device (§7.6).
+ */
+export interface MessageConfirmation {
+  connectionId: number;
+}
+
 /** Proof that the user confirmed a reset. Required by `resetSettings`. */
 export interface ResetConfirmation {
   confirmed: true;
+}
+
+interface RequestOptions {
+  retry?: Pending["retry"];
+  collect?: { item: string; end: string };
+  timeoutMs?: number;
 }
 
 interface Pending {
@@ -131,8 +150,8 @@ interface Pending {
   timeoutMs?: number;
   /** Resend every `everyMs` until `Date.now()` reaches `until`. */
   retry?: { everyMs: number; until: number };
-  /** Set for stations.list: collects `station` lines until `stations.end`. */
-  stations?: StationMsg[];
+  /** Set for list requests: collects `item` lines until `end` (stations.list, msg.list). */
+  collect?: { item: string; end: string; rows: unknown[] };
   timer?: ReturnType<typeof setTimeout>;
   busyTimer?: ReturnType<typeof setTimeout>;
 }
@@ -198,7 +217,7 @@ export class DeviceClient extends Emitter<ClientEvents> {
       helloRetryMs: options.helloRetryMs ?? 3000,
       helloWindowMs: options.helloWindowMs ?? HELLO_WINDOW_MS,
       busyRetryDelayMs: options.busyRetryDelayMs ?? 500,
-      beaconTimeoutMs: options.beaconTimeoutMs ?? 15_000,
+      beaconTimeoutMs: options.beaconTimeoutMs ?? 5000,
       // The device accepts at most 20 bytes per write (§5.2): never more, whatever is asked.
       maxWriteBytes: Number.isFinite(maxWrite)
         ? Math.min(MAX_WRITE_BYTES, Math.max(1, maxWrite))
@@ -423,7 +442,7 @@ export class DeviceClient extends Emitter<ClientEvents> {
   async listStations(): Promise<StationMsg[]> {
     this.stations = (await this.request(
       { op: "stations.list" },
-      { collect: true },
+      { collect: { item: "station", end: "stations.end" } },
     )) as StationMsg[];
     this.emit("stations", this.stations);
     return this.stations;
@@ -446,6 +465,52 @@ export class DeviceClient extends Emitter<ClientEvents> {
       { op: "beacon.send" },
       { timeoutMs: this.opts.beaconTimeoutMs },
     )) as BeaconMsg;
+  }
+
+  /**
+   * The current connection. It changes on every connect and disconnect, so a confirmation given
+   * for one connection does not carry over to the next.
+   */
+  get connectionId(): number {
+    return this.generation;
+  }
+
+  /**
+   * Queue an APRS message (`msg.send`, §7.6). The device answers at once with the `msg` row
+   * (`state` "pending") and then transmits it, retrying until it is acknowledged (5 tries at
+   * most). The caller must pass the user's confirmation for this connection (type-enforced).
+   * `to` and `text` are checked first (code `invalid`, key "to" or "text"; nothing is sent).
+   */
+  async sendMessage(to: string, text: string, confirmation: MessageConfirmation): Promise<MsgMsg> {
+    this.requireReady();
+    if (
+      (confirmation as Partial<MessageConfirmation> | undefined)?.connectionId !== this.generation
+    ) {
+      throw new DeviceError("confirmation_required", "msg.send needs confirmation");
+    }
+    const badTo = checkMsgTo(to, this.lastStatus?.call);
+    if (badTo !== undefined) throw new DeviceError("invalid", badTo, "to");
+    const badText = checkMsgText(text);
+    if (badText !== undefined) throw new DeviceError("invalid", badText, "text");
+    return (await this.request({ op: "msg.send", to: normalizeTo(to), text })) as MsgMsg;
+  }
+
+  /**
+   * The messages the device keeps, newest first (`msg.list`, §7.7). This clears the device's
+   * unread count, so call it only when the user looks at the messages.
+   */
+  async listMessages(): Promise<MsgMsg[]> {
+    this.requireReady();
+    return (await this.request(
+      { op: "msg.list" },
+      { collect: { item: "msg", end: "msg.end" } },
+    )) as MsgMsg[];
+  }
+
+  /** Stop retrying a pending message (`msg.cancel`, §7.8). An ended one comes back unchanged. */
+  async cancelMessage(no: string): Promise<MsgMsg> {
+    this.requireReady();
+    return (await this.request({ op: "msg.cancel", no })) as MsgMsg;
   }
 
   // ---- settings helpers -------------------------------------------------------------------
@@ -525,10 +590,7 @@ export class DeviceClient extends Emitter<ClientEvents> {
 
   // ---- request machinery ------------------------------------------------------------------
 
-  private request(
-    req: Request,
-    opts: { retry?: Pending["retry"]; collect?: boolean; timeoutMs?: number } = {},
-  ): Promise<unknown> {
+  private request(req: Request, opts: RequestOptions = {}): Promise<unknown> {
     if (this.state !== "handshaking" && this.state !== "ready") {
       return Promise.reject(new DeviceError("not_connected"));
     }
@@ -542,10 +604,7 @@ export class DeviceClient extends Emitter<ClientEvents> {
     return result;
   }
 
-  private exec(
-    req: Request,
-    opts: { retry?: Pending["retry"]; collect?: boolean; timeoutMs?: number },
-  ): Promise<unknown> {
+  private exec(req: Request, opts: RequestOptions): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const id = this.nextId++;
       let bytes: Uint8Array;
@@ -569,7 +628,7 @@ export class DeviceClient extends Emitter<ClientEvents> {
         busyRetried: false,
         retry: opts.retry,
         timeoutMs: opts.timeoutMs,
-        stations: opts.collect ? [] : undefined,
+        collect: opts.collect ? { ...opts.collect, rows: [] } : undefined,
       };
       this.pending = p;
       this.send(p);
@@ -748,6 +807,8 @@ export class DeviceClient extends Emitter<ClientEvents> {
       this.emit("rx", m as RxMsg);
     } else if (m.t === "tx") {
       this.emit("tx", m as TxMsg);
+    } else if (m.t === "msg" && (m as MsgMsg).id === undefined) {
+      this.emit("msg", m as MsgMsg);
     }
   }
 
@@ -772,12 +833,13 @@ export class DeviceClient extends Emitter<ClientEvents> {
     }
     if (!p || (m as { id?: number }).id !== p.id) return false; // an event, or a late duplicate reply
 
-    if (p.stations) {
-      if (m.t === "station") {
-        p.stations.push(m as StationMsg);
+    const c = p.collect;
+    if (c) {
+      if (m.t === c.item) {
+        c.rows.push(m);
         this.arm(p); // each line extends the timeout
-      } else if (m.t === "stations.end") {
-        this.settle(p, () => p.resolve(p.stations));
+      } else if (m.t === c.end) {
+        this.settle(p, () => p.resolve(c.rows));
       }
       return false;
     }
@@ -792,7 +854,7 @@ export class DeviceClient extends Emitter<ClientEvents> {
       return;
     }
     p.busyRetried = true;
-    if (p.stations) p.stations = [];
+    if (p.collect) p.collect.rows = [];
     clearTimeout(p.busyTimer);
     p.busyTimer = setTimeout(() => {
       if (this.pending === p) this.send(p);
