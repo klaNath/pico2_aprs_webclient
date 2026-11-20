@@ -61,6 +61,7 @@ pico2_aprs_webclient/
       statusView.ts         tx_ready を大きく表示、fix/sats/位置、sw、beacon_mode、next_beacon_s、「Send beacon now」(beacon.send)、lvl_db メーター、sd、dropped
       feedView.ts           rx/tx を時系列で表示。解析結果を開くと詳細が見える
       stationsView.ts       局の一覧(距離、方位、last_s、count、lvl)
+      messagesView.ts       APRS メッセージ(相手ごとの会話、送信、取り消し。仕様 v0.8 で追加)
       radarView.ts          SVG のレーダー(自局が中心、対数または線形の縮尺、局をタップすると詳細)
       settingsView.ts       schema から作るフォーム + 既知の項目の専用部品、差分だけを 1 回の settings.set で送る、
                             err invalid を key ごとに表示、reset の確認、tx_enabled を true にするときの確認ダイアログ
@@ -80,7 +81,7 @@ PWA は `vite-plugin-pwa` を使う(precache のみ。実行時に外部へ取�
 - 未知のキーや未知の kind は無視し、`other` として扱う。欠けたキーは undefined として扱う
 - `busy` を受けたら、少し待って同じ要求を再送する(1 回だけ)
 - 切断: `gattserverdisconnected` で、自動再接続を指数バックオフで試み、§6.2 の流れを最初からやり直す
-- 安全: tx_ready は常に見える場所(ヘッダーのバッジ)に表示する。tx_enabled を true にするとき、callsign を変えるとき、reset のときは確認ダイアログを出す。mice_message は 0〜6 だけ選べる
+- 安全: tx_ready は常に見える場所(ヘッダーのバッジ)に表示する。msg.send は押したときだけ送り、接続ごとに最初の 1 回だけ確認する。tx_enabled を true にするとき、callsign を変えるとき、reset のときは確認ダイアログを出す。mice_message は 0〜6 だけ選べる
 - 受信件数の上限(既定 500)、局の表の上限(本機と同じく 64 以上でもよい)。描画は requestAnimationFrame で間引く
 
 ## 作業の順序

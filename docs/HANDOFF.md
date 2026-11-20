@@ -1,4 +1,4 @@
-# 引き継ぎ(2026-11-19 時点)
+# 引き継ぎ(2026-11-20 時点)
 
 作業の引き継ぎのメモ(現状、決定事項、次にやること)。計画の全体は [plan.md](plan.md)。
 
@@ -7,7 +7,7 @@
 - **作業 1〜6 は実装済みで、公開サイトに配信されている**: https://klanath.github.io/pico2_aprs_webclient/ (`main` への push で GitHub Actions が自動配信。typecheck、lint、test が通らなければ配信しない)。テスト 965 件、型チェック、lint、ビルドは通っている
 - **Android 実機(Android 11、Chrome 157)で確認済み**: チューザー、ペアリング(通知から開くパスキー入力)、接続して Status/Settings/Feed/Stations/Radar の表示、ペアリング済みの再接続(パスキーなし)、自動再接続(端末の Bluetooth を切って入れる、ファームウェア更新によるトラッカーの再起動)、PWA(インストール可能、通信なしで起動)
 - **実機で未確認**(あなたの操作が要る。下の「次にやること」): 間違ったパスキー、ダイアログの取り消し、片側だけペアリングを消した場合、トラッカーが戻らないときの「20 回で諦める」、Settings の書き込み(実機の送信設定が変わるので、Q1 のテスト用コールサインに替えられるときに)、ホーム画面追加後の表示、新しい版が出たときの「Update」
-- **仕様**: ble-protocol.md v0.5(proto 1)に対応済み(下の「仕様 v0.5 への対応」)。ピン `ce51b61`。Issue #5(U3)はファームウェア側の返信まで済みで、Chrome 側の残りのテスト待ちのため開いたまま
+- **仕様**: ble-protocol.md v0.8(proto 1)に対応済み(下の「仕様 v0.6〜v0.8 への対応」)。ピン `d22e87d`。APRS メッセージ(§7.6〜§7.9、§8.8)は仕様側で Provisional で、ファームウェアは実装中。Issue #5(U3)はファームウェア側の返信まで済みで、Chrome 側の残りのテスト待ちのため開いたまま
 - **再開するとき**: `docs/HANDOFF.md` を読む → `npm ci` → `npm run spec` → `npm run spec:update`(ピンが動いたら差分を確認して反映してからコミット)。確認の方法は下の「Android の Chrome で確かめる」と「画面を確認する方法」
 - **実機の識別情報(コールサイン、アドレス、広告名)は、ファイル、Issue、コミットに書かない**(リポジトリは公開)
 
@@ -19,7 +19,7 @@
 - 公開リポジトリ https://github.com/klaNath/pico2_aprs_webclient(2026-11-19 に非公開から公開に変えた)。main に push 済み
 - 仕様書は git サブモジュール `docs/spec-src`(`klaNath/pico2_aprs` の `main` を追跡、sparse-checkout で ble-protocol.md と ble-control.md のみ)。取得と更新は `npm run spec` / `npm run spec:update`(`scripts/setup-spec.sh`)
 
-## 仕様書の版(履歴。いまは v0.4 のピン `f8cd818`。下の「仕様 v0.4 への対応」)
+## 仕様書の版(履歴。いまは v0.8 のピン `d22e87d`。下の「仕様 v0.6〜v0.8 への対応」)
 
 - ble-protocol.md: v0.3(2026-11-17)、proto 1。サブモジュールのピン f6e3364(`klaNath/pico2_aprs` の `main` ブランチ。2026-11-18 に追跡先を `radio-interface-schematic` から `main` に変えた)。読む場所は `docs/spec-src/docs/`
 - 再開時に `npm run spec:update` を実行し、ピンが動いたら(`git -C docs/spec-src log` と差分で)変更点を確認してから実装に反映する。新しいピンは親リポジトリでコミットする(特に §4 のペアリング(暫定)と §11 の未確定項目 U2、U3、U5、U6、U8)
@@ -165,6 +165,22 @@
 - 設定 `beacon_mode`: schema の `choices` を選択式の widget にした(`widgets/choice.ts`)。`choices` の確認は値の包含だけなので、装置から来る項目にも使う(形の崩れた `choices` は無視)。`auto` に変えるときは確認(`SettingsRisk` の `beacon_auto`)。`status.beacon_mode` がキャッシュと食い違えば設定を読み直す
 - Mock: `beacon.send`(スイッチ → 測位と時刻 → 10 秒の順に調べる)、`status` に `beacon_mode`、`utc`、`last_tx_s`。テスト用に `failNextBeacon`、`now`
 - **未確認**: 実機での `beacon.send`(Q1 のテスト用コールサイン、または tx 無効の dry run で)。画面(ボタンの見た目、ダイアログ)をブラウザで開いての確認。仕様への質問は Issue で登録済み(`klaNath/pico2_aprs` の #7: 応答が来るまでの上限、#8: `beacon` の `dry` が必ず入るか。ない場合は「送った」と言わない作りにした)
+
+## 仕様 v0.6〜v0.8 への対応(ピンを `ce51b61` → `d22e87d`、2026-11-20)
+
+- **v0.6**(#7、#8 の回答): `beacon.send` のタイムアウトを 15 秒 → **5 秒**(§7.5 の推奨)。タイムアウトしたら、接続が生きていれば `status` を要求し、`last_tx_s` が押してからの経過秒以内ならビーコンは作られた、と表示する(`beaconTimeoutText`。自動のビーコンと区別はできないので「a beacon」と書く)。`beacon.dry` は必須の bool にした(欠けた応答は形の誤り)。`frame_too_long` はいまの設定の範囲では起きないが、文言は残した
+- **v0.7**(#5 の結果): `PAIRING_HINT` はすでに「通知を開く」「LCD の 6 桁」を書いていたので変更なし
+- **v0.8**(APRS メッセージ、チャネルの判定。Provisional):
+  - プロトコル: `msg.send`/`msg.list`/`msg.cancel`、`msg`/`msg.end` の形、`status.msg_unread`/`msg_pending`/`ch_busy`、err `tx_not_ready`/`queue_full`/`unknown_msg`(`src/protocol/types.ts`)。宛先と本文の検査は `src/protocol/messages.ts`(装置と同じ規則。宛先 1〜9 文字 `[A-Z0-9-]`、自局は不可、本文 1〜67 文字の印字可能 ASCII で `|~{` なし)
+  - `DeviceClient`: `sendMessage(to, text, {connectionId})`(確認の証拠を型で必須。`connectionId` は接続ごとに変わるので、再接続すると確認はやり直し)、`listMessages()`(`stations.list` と同じ集め方を一般化した `collect`)、`cancelMessage(no)`。id のない `msg` は `msg` イベント
+  - `App`: `MessageStore`(`src/store/messages.ts`。相手ごとの会話、送信は番号、受信は送信者と番号(番号なしは本文と時刻)で同一視)。**`msg.list` は接続時には呼ばない**(本機の未読が消えるため。ユーザー決定)。Messages タブを表示したとき、表示中の再接続、表示中に `status.dropped` が増えたとき(イベントの欠落、§8.5)、表示中に受信したときに呼ぶ。`msg.list` の前の `msg_unread` の数だけ、新しく知った受信を未読にする
+  - UI: Messages タブ(`src/ui/messagesView.ts`、文言と判定は `src/ui/messages.ts`)。相手の一覧 → 会話(古い順、下に入力欄)、「New message」で宛先を入力。送信の状態(Waiting to send / Sent n of 5 / Delivered / Rejected / Not acknowledged / Cancelled / Stopped、未知の値は Ended)、pending に「Stop sending」(`msg.cancel`)。タブに未読の数(画面を見ている間はアプリの数、見ていないときは本機の `msg_unread` との大きい方)
+  - 送信の安全: 押したときだけ送る。`tx_ready` が false なら Send を押せない(メッセージは dry run にならない)。確認ダイアログは**接続ごとに最初の 1 回**(ユーザー決定。CLAUDE.md に追記)
+  - Status: 「Channel」(Busy/Clear)、「Messages」(未読と送信中の数)。「Received / Beacons」は `tx_count` にメッセージと ack も入るので「Received / Sent」に。ヘッダーの説明は「Beacons and messages go on the air」
+  - Feed: `tx` はビーコンとは限らないが、種別はもともと TNC2 の解析結果(message、ack、mic-e)で出していたので変更なし
+  - Mock: メッセージの列(pending 4 件まで、16 件保持、30/60/120/240/240 秒で 5 回、`failed`、cancel)、`tick()`(transport が 1 秒ごと)、`receiveMessage()`(番号つきなら ack の `tx`)、`chBusy`。デモでは相手が 4 秒後に ack し、ときどき自局宛のメッセージが届く(`autoAckMs`、`autoMsgMs`)
+- 画面はデモ(`?mock=1`)で確認済み(送信、確認ダイアログ、Delivered、入力の誤り、未読の印、Status の行)。タブが 6 つになり、幅 412px では「Settings」が右に隠れる(横スクロールで出る)
+- **未確認**: 実機でのメッセージ(ファームウェアの実装待ち。Q1 のテスト用コールサインで)、`ch_busy` の実際の値(U9: しきい値は未測定)
 
 ## 環境の注意
 
